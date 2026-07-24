@@ -17,25 +17,28 @@ Metrics/AbcSize:
   Exclude:
     - test/**/*
     - bench/**/*
-    # インタプリタ / エミッタの中心 case 表 (下の MethodLength と同じ理由)。
+    # インタプリタ / エミッタ / 解析の中心 case 表 (下の MethodLength と同じ理由)。
     - lib/moissanite/oracle.rb
     - lib/moissanite/backend/cc.rb
+    - lib/moissanite/extent_guard.rb
 
 Metrics/MethodLength:
   Max: 20
   Exclude:
     - test/**/*
     - bench/**/*
-    # インタプリタ / エミッタの中心は「ノード種別 → 意味」の対応表 (case)。
+    # インタプリタ / エミッタ / 解析の中心は「ノード種別 → 意味」の対応表 (case)。
     # 分割すると対応表としての一覧性 (= 意味論の読みやすさ) が壊れるので、
-    # この 2 ファイルだけ表の長さを許す。
+    # これらのファイルだけ表の長さを許す。
     - lib/moissanite/oracle.rb
     - lib/moissanite/backend/cc.rb
+    - lib/moissanite/extent_guard.rb
 
 Metrics/CyclomaticComplexity:
   Exclude:
     - lib/moissanite/oracle.rb
     - lib/moissanite/backend/cc.rb
+    - lib/moissanite/extent_guard.rb
     - bench/**/*
     - test/equivalence_test.rb
 

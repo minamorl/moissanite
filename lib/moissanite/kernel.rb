@@ -68,6 +68,13 @@ module Moissanite
       [:kernel, @name, @params.map(&:to_sexp), @return_type, @body.map(&:to_sexp)]
     end
 
+    # 単純な要素ごと形なら安全条件 (n <= 各バッファ長) を返す。
+    # それ以外は nil = 何も主張しない (ExtentGuard を参照)。
+    def extent_guard
+      @extent_guard = ExtentGuard.analyze(@body) || :none if @extent_guard.nil?
+      @extent_guard == :none ? nil : @extent_guard
+    end
+
     # 宣言順の [型, ...]。backend の ABI 決定と引数検証が共有する。
     def param_types
       @params.map(&:type)

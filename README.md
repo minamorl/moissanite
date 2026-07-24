@@ -108,20 +108,38 @@ out.to_a
 
 ## Semantics (pinned by the oracle, enforced on backends by the differential battery)
 
-| topic         | rule                                                                                                                                                                                    |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| types         | `:f64` (IEEE 754 double), `:i64` (64-bit two's complement), `:bool`; `:f64_buf`                                                                                                         |
-| i64 overflow  | wraps (backends compile with `-fwrapv`)                                                                                                                                                 |
-| i64 `/` `%`   | truncate toward zero, remainder follows the dividend (C semantics, not Ruby's)                                                                                                          |
-| i64 `/ 0`     | oracle raises `MathError`; native is undefined — guard before dividing                                                                                                                  |
-| f64           | bit-exact with Ruby `Float` (`-ffp-contract=off`, hex-float constants)                                                                                                                  |
-| `&` `\|`      | bool-only, short-circuit in both levels                                                                                                                                                 |
-| casts         | `.to_f64`, `.to_i64` (truncates toward zero; out-of-range raises in the oracle)                                                                                                         |
-| mixed types   | never implicit — `f64 + i64` is a build-time `TypeMismatch`                                                                                                                             |
-| `count(n)`    | `n` evaluated once at loop entry; `break_if` exits the innermost loop                                                                                                                   |
-| libm          | `.sqrt .sin .cos .exp .log .abs .min .max` (f64) — same libm as Ruby's `Math`, so bit-identical; negative `sqrt`/`log` give C's quiet `NaN`, `min`/`max` follow `fmin`/`fmax` NaN rules |
-| buffer bounds | oracle checks and raises `IndexError`; native trusts the caller (N2: checked mode)                                                                                                      |
-| falling off   | impossible — kernels must end in `k.ret`, validated at build                                                                                                                            |
+| topic         | rule                                                                                                                                                                                                         |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| types         | `:f64` (IEEE 754 double), `:i64` (64-bit two's complement), `:bool`; `:f64_buf`                                                                                                                              |
+| i64 overflow  | wraps (backends compile with `-fwrapv`)                                                                                                                                                                      |
+| i64 `/` `%`   | truncate toward zero, remainder follows the dividend (C semantics, not Ruby's)                                                                                                                               |
+| i64 `/ 0`     | oracle raises `MathError`; native is undefined — guard before dividing                                                                                                                                       |
+| f64           | bit-exact with Ruby `Float` (`-ffp-contract=off`, hex-float constants)                                                                                                                                       |
+| `&` `\|`      | bool-only, short-circuit in both levels                                                                                                                                                                      |
+| casts         | `.to_f64`, `.to_i64` (truncates toward zero; out-of-range raises in the oracle)                                                                                                                              |
+| mixed types   | never implicit — `f64 + i64` is a build-time `TypeMismatch`                                                                                                                                                  |
+| `count(n)`    | `n` evaluated once at loop entry; `break_if` exits the innermost loop                                                                                                                                        |
+| libm          | `.sqrt .sin .cos .exp .log .abs .min .max` (f64) — same libm as Ruby's `Math`, so bit-identical; negative `sqrt`/`log` give C's quiet `NaN`, `min`/`max` follow `fmin`/`fmax` NaN rules                      |
+| buffer bounds | oracle checks every access (`IndexError`). For kernels with a simple elementwise shape both levels also reject an out-of-range count _before running_ (see below); other shapes are unchecked in native code |
+| falling off   | impossible — kernels must end in `k.ret`, validated at build                                                                                                                                                 |
+
+### The extent guard
+
+Native code takes bare pointers, so a count larger than the buffer would silently corrupt the
+heap. That is a defect, not a missing feature, so moissanite closes it where it can prove the
+condition. When a kernel's body is a single `count(n)` loop over an `:i64` parameter and every
+buffer index is exactly that loop variable — the shape of every elementwise kernel and everything
+`Pipeline` builds — the safe precondition is just `n ≤ buffer.size`, and both `call` and
+`interpret` check it up front:
+
+```ruby
+kernel.call(out, xs, 4_000_000)
+# ArgumentError: n=4000000 exceeds xs (3 elements) — the kernel would read or write out of bounds
+```
+
+For any other shape (strided indices, nested loops, computed offsets) `kernel.extent_guard`
+returns `nil` and **nothing is claimed**. Silence beats a promise that cannot be kept; develop
+those kernels against `interpret`, which bounds-checks every access.
 
 ## Backends
 

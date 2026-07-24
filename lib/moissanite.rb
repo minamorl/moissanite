@@ -16,6 +16,7 @@
 require_relative 'moissanite/version'
 require_relative 'moissanite/expr'
 require_relative 'moissanite/stmt'
+require_relative 'moissanite/extent_guard'
 require_relative 'moissanite/builder'
 require_relative 'moissanite/kernel'
 require_relative 'moissanite/pipeline'

@@ -190,7 +190,28 @@ module Moissanite
               "#{kernel.name}: expected #{expected.size} args, got #{args.size}"
       end
 
-      expected.zip(args).map { |param, arg| convert(kernel, param, arg, native) }
+      converted = expected.zip(args).map { |param, arg| convert(kernel, param, arg, native) }
+      enforce_extent(kernel, args, converted)
+      converted
+    end
+
+    # 単純な要素ごと形の kernel については、走らせる前に
+    # 「n <= 各バッファの要素数」を確かめる (Kernel#extent_guard 参照)。
+    # native は生ポインタを信じて走るので、この検査だけが黙ったヒープ
+    # 破壊とエラーを分ける。oracle 側でも同じ検査をして挙動を揃える。
+    def enforce_extent(kernel, args, converted)
+      guard = kernel.extent_guard
+      return unless guard
+
+      count = converted[guard.count_index]
+      guard.buffer_indices.each do |index|
+        buffer = args[index]
+        next unless buffer.is_a?(Buffer) && count > buffer.size
+
+        raise ArgumentError,
+              "#{kernel.name}: n=#{count} exceeds #{kernel.params[index].name} " \
+              "(#{buffer.size} elements) — the kernel would read or write out of bounds"
+      end
     end
 
     def convert(kernel, param, arg, native)
