@@ -107,4 +107,60 @@ class PipelineTest < Minitest::Test
     assert_raises(ArgumentError) { Moissanite::Pipeline.f64(arity: 3) }
     assert_raises(ArgumentError) { Moissanite::Pipeline.f64.map }
   end
+
+  # --- 畳み込み (map-reduce の融合) ------------------------------------
+
+  def test_fused_sum_matches_oracle_and_ruby
+    xs = buffer([0.0, 1.0, 4.0, -1.0, 2.25])
+    kernel = sample_pipeline.sum
+    expected = xs.to_a.sum { |v| (((v * 2.0) + 1.0).abs**0.5) * SCALE }
+
+    assert_in_delta expected, kernel.call(xs, 5), 1e-12
+    assert_equal kernel.interpret(xs, 5), kernel.call(xs, 5)
+  end
+
+  # 融合した map-reduce は中間バッファに一切触れない。段別 (map してから
+  # sum) と添字順の累積が同じなので、浮動小数でもビット一致する。
+  def test_fused_reduce_matches_map_then_reduce
+    xs = buffer(Array.new(500) { |i| (((i * 7) % 101) / 13.0) - 3.0 })
+    fused = sample_pipeline.sum(:fused_sum).call(xs, 500)
+
+    mapped = Moissanite::Buffer.f64(500)
+    sample_pipeline.fuse(:mapper).call(mapped, xs, 500)
+    staged = Moissanite::Pipeline.f64.sum(:plain_sum).call(mapped, 500)
+
+    assert_equal staged, fused
+  end
+
+  def test_reduce_with_custom_combiner
+    xs = buffer([-5.0, 2.0, 9.5, -0.5])
+    kernel = Moissanite::Pipeline.f64.map(&:abs).reduce(0.0, :peak) { |acc, v| acc.max(v) }
+
+    assert_in_delta 9.5, kernel.call(xs, 4)
+    assert_equal kernel.interpret(xs, 4), kernel.call(xs, 4)
+  end
+
+  def test_two_input_reduce_is_a_dot_product
+    xs = buffer([1.0, 2.0, 3.0])
+    ys = buffer([4.0, 5.0, 6.0])
+    kernel = Moissanite::Pipeline.f64(arity: 2).map { |a, b| a * b }.sum(:dot)
+
+    assert_in_delta 32.0, kernel.call(xs, ys, 3)
+    assert_equal kernel.interpret(xs, ys, 3), kernel.call(xs, ys, 3)
+  end
+
+  # 段が無くても 1 入力なら素の総和として意味が通る。
+  def test_reduce_without_stages_is_a_plain_sum
+    xs = buffer([1.5, -2.5, 4.0])
+
+    assert_in_delta 3.0, Moissanite::Pipeline.f64.sum.call(xs, 3)
+  end
+
+  def test_reduce_without_stages_rejects_two_inputs
+    assert_raises(Moissanite::BuildError) { Moissanite::Pipeline.f64(arity: 2).sum }
+  end
+
+  def test_reduce_requires_a_block
+    assert_raises(ArgumentError) { Moissanite::Pipeline.f64.reduce(0.0) }
+  end
 end

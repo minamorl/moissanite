@@ -84,6 +84,32 @@ fn staged(a: &mut [f64], b: &mut [f64], xs: &[f64], stages: &[Box<dyn Fn(f64) ->
     }
 }
 
+// map-reduce: Rust のイテレータ連鎖はコンパイル時に融合される (zero-cost
+// abstraction) ので、これが AOT 側の最良形。対して段が実行時に決まる
+// dyn 版は融合できない。
+fn sum_fused(xs: &[f64], gain: f64) -> f64 {
+    xs.iter()
+        .map(|&x| {
+            let v = x * 2.0 + 1.0;
+            let v = v.abs().sqrt();
+            let v = v * gain - 0.25;
+            v.min(3.0).max(-3.0)
+        })
+        .fold(0.0, |acc, v| acc + v)
+}
+
+fn sum_dyn(xs: &[f64], stages: &[Box<dyn Fn(f64) -> f64>]) -> f64 {
+    let mut acc = 0.0;
+    for &x in xs {
+        let mut v = x;
+        for stage in stages {
+            v = stage(v);
+        }
+        acc += v;
+    }
+    acc
+}
+
 fn bench<F: FnMut()>(label: &str, iters: u32, mut f: F) -> f64 {
     f();
     let t0 = Instant::now();
@@ -190,5 +216,25 @@ fn main() {
         "  {:.2} ns/elem  checksum={:.6}  (段ごとに全配列を舐める)",
         s3 * 1e9 / FN_ as f64,
         pong.iter().sum::<f64>()
+    );
+
+    // map-reduce: コンパイル時融合されるイテレータ連鎖 vs 実行時合成
+    let mut total = 0.0;
+    let s4 = bench("map-reduce [iterator chain rust]", 5, || {
+        total = sum_fused(std::hint::black_box(&fxs), std::hint::black_box(gain))
+    });
+    println!(
+        "  {:.2} ns/elem  total={:.6}  (コンパイル時に融合)",
+        s4 * 1e9 / FN_ as f64,
+        total
+    );
+
+    let s5 = bench("map-reduce [dyn-chain rust]", 5, || {
+        total = sum_dyn(&fxs, &stages)
+    });
+    println!(
+        "  {:.2} ns/elem  total={:.6}  (実行時合成: 融合できない)",
+        s5 * 1e9 / FN_ as f64,
+        total
     );
 }

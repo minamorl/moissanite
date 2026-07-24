@@ -54,12 +54,38 @@ module Moissanite
     def fuse(name = :fused)
       raise BuildError, 'pipeline has no stages' if @stages.empty?
 
-      stages = @stages
       build_kernel(name) do |k, outputs, inputs|
-        value = k.let(stages.first.call(*inputs))
-        stages.drop(1).each { |stage| value = k.let(stage.call(value)) }
-        outputs.call(value)
+        outputs.call(apply_stages(k, inputs))
       end
+    end
+
+    # 全段 + 畳み込みを 1 カーネルへ融合する: 入力を 1 回読み、スカラを返す。
+    # **出力バッファが存在しない** — 中間結果は一切メモリに触れない。
+    # これが融合の効果が最大になる形で、ライブラリ合成 (map してから sum) が
+    # 中間配列を確保して往復するのと対照的。
+    #
+    # reducer は (acc_expr, value_expr) -> Expr の純関数。init は Float。
+    # 畳み込みは添字順の逐次累積なので、oracle と native で結合順が一致し
+    # 浮動小数でもビット一致する。
+    #
+    #   pipe.reduce(0.0) { |acc, v| acc + v }   # 融合した総和
+    def reduce(init, name = :reduced, &reducer)
+      raise ArgumentError, 'reduce requires a block' unless reducer
+
+      Moissanite.kernel(name, **signature(output: false)) do |k, *rest|
+        count = rest.pop
+        acc = k.let(Expr.lift(Float(init), :f64))
+        k.count(count) do |i|
+          value = apply_stages(k, rest.map { |buf| k.let(buf[i]) })
+          k.assign(acc, reducer.call(acc, value))
+        end
+        k.ret acc
+      end
+    end
+
+    # 総和 (reduce の最頻ケース)。
+    def sum(name = :summed)
+      reduce(0.0, name) { |acc, value| acc + value }
     end
 
     # 段ごとに独立したカーネルを作る (= 段数だけメモリを往復する)。
@@ -76,6 +102,20 @@ module Moissanite
 
     private
 
+    # 段を順に適用する。各段の結果を let で束ねるのは、段が入力を複数回
+    # 参照したとき (v * v など) に式木が指数的に膨らむのを防ぐため。
+    def apply_stages(builder, inputs)
+      if @stages.empty?
+        raise BuildError, 'a 2-input pipeline needs at least one stage to combine its inputs' if inputs.size > 1
+
+        return inputs.first
+      end
+
+      value = builder.let(@stages.first.call(*inputs))
+      @stages.drop(1).each { |stage| value = builder.let(stage.call(value)) }
+      value
+    end
+
     # out, in0.., n のシグネチャで要素ごとループのカーネルを組む。
     # 各段の結果を k.let で束ねるのは、段が入力を複数回参照したとき
     # (v * v など) に式木が指数的に膨らむのを防ぐため。
@@ -90,9 +130,11 @@ module Moissanite
       end
     end
 
-    # out, in0..inN, n — 宣言順がそのまま呼び出し順になる。
-    def signature
-      params = { out: :f64_buf }
+    # [out,] in0..inN, n — 宣言順がそのまま呼び出し順になる。
+    # 畳み込み (reduce) はスカラを返すので出力バッファを取らない。
+    def signature(output: true)
+      params = {}
+      params[:out] = :f64_buf if output
       @arity.times { |j| params[:"in#{j}"] = :f64_buf }
       params[:n] = :i64
       params

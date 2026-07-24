@@ -208,6 +208,27 @@ puts format('  融合の利得 = %.2fx  identical = %s',
 puts "  gain(実行時係数) = #{format('%.17g', gain)}"
 puts
 
+# ---------------------------------------------------------------- 融合の極: map-reduce
+# 畳み込みまで融合すると出力バッファが消える — 入力を 1 回読むだけで
+# スカラが出る。対照は「map してから sum」(中間配列を確保して往復)。
+# ライブラリ合成 (numpy/ndarray 的に段ごとの配列を作る形) がこれに当たる。
+sum_kernel = pipeline.sum(:fused_sum)
+plain_sum = Moissanite::Pipeline.f64.sum(:plain_sum)
+map_only = pipeline.fuse(:map_only)
+
+fused_sum_sec = measure(5) { sum_kernel.call(fuse_xs, FUSE_N) }
+staged_sum_sec = measure(5) do
+  map_only.call(ping, fuse_xs, FUSE_N)
+  plain_sum.call(ping, FUSE_N)
+end
+row "map-reduce n=#{FUSE_N} [融合 1 パス・中間バッファ無し]", fused_sum_sec, FUSE_N
+row "map-reduce n=#{FUSE_N} [map してから sum]", staged_sum_sec, FUSE_N
+puts format('  融合の利得 = %.2fx  identical = %s  total=%.6f',
+            staged_sum_sec / fused_sum_sec,
+            sum_kernel.call(fuse_xs, FUSE_N) == plain_sum.call(ping, FUSE_N),
+            sum_kernel.call(fuse_xs, FUSE_N))
+puts
+
 # ---------------------------------------------------------------- 特殊化レイテンシ (冷キャッシュ)
 # 「実行時にカーネルを組んで定数を畳み込む」往復の値段。生成物は
 # コンテンツアドレスされるので、これはユニークな式木の初回だけの費用。

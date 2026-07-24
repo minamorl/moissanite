@@ -17,14 +17,16 @@ a differential battery pins the native backends bit-for-bit to the oracle.
 
 ## Numbers (Ruby 3.3, gcc 13 `-O3`, rustc 1.94 `--release` + LTO, same algorithm, same run)
 
-| workload                                         | moissanite                     | Rust (std, release)     |
-| ------------------------------------------------ | ------------------------------ | ----------------------- |
-| mandelbrot 600×400, limit 500, 1 thread          | **115 ms** (checksum equal)    | 114 ms                  |
-| mandelbrot, 4 plain `Thread.new` + dynamic bands | **31 ms** (3.65× scaling)      | (needs rayon)           |
-| horner deg-8, runtime coefficients               | **1.85 ns/el** (specialized)   | 3.51 ns/el (generic)    |
-| 4-stage pipeline **composed at runtime**         | **1.91 ns/el** (fused, 1 pass) | 6.89 ns/el (dyn-chain)  |
-| the same pipeline hardcoded at compile time      | —                              | 1.40 ns/el (hand-fused) |
-| any of these on the pure-Ruby oracle             | ~90× slower                    | —                       |
+| workload                                         | moissanite                    | Rust (std, release)    |
+| ------------------------------------------------ | ----------------------------- | ---------------------- |
+| mandelbrot 600×400, limit 500, 1 thread          | **115 ms** (checksum equal)   | 114 ms                 |
+| mandelbrot, 4 plain `Thread.new` + dynamic bands | **31 ms** (3.65× scaling)     | (needs rayon)          |
+| horner deg-8, runtime coefficients               | **1.85 ns/el** (specialized)  | 3.51 ns/el (generic)   |
+| 4-stage pipeline **composed at runtime**         | **1.8 ns/el** (fused, 1 pass) | 7.6 ns/el (dyn-chain)  |
+| the same pipeline hardcoded at compile time      | —                             | 1.5 ns/el (hand-fused) |
+| 4-stage **map-reduce** composed at runtime       | **1.9 ns/el** (no buffer)     | 9.0 ns/el (dyn-chain)  |
+| the same map-reduce as a compile-time iterator   | —                             | 2.2 ns/el (zero-cost)  |
+| any of these on the pure-Ruby oracle             | ~90× slower                   | —                      |
 
 Four honest readings (absolute times vary with machine load; compare within one run):
 
@@ -33,12 +35,17 @@ Four honest readings (absolute times vary with machine load; compare within one 
 - **Ahead where AOT cannot follow.** The horner kernel is _built at runtime_, so coefficients
   that only exist at runtime are folded into the instruction stream before `-O3` sees them.
   A stock AOT binary must stay generic. (Rust could match it only by shipping its own JIT.)
-- **Dynamism is free here and expensive there.** Compare the last two Rust rows: the _same_
-  4-stage pipeline costs 1.40 ns/el baked into the binary and 6.89 ns/el when assembled at
-  runtime through `Box<dyn Fn>` — a **4.9× tax on dynamism**, paid in indirect calls and lost
-  fusion. moissanite composes at runtime and still fuses into one vectorized pass (1.91 ns/el),
-  so it runs **3.6× faster than runtime-composed Rust** while staying within 1.36× of the
-  hardcoded build. That gap is the whole thesis in one table.
+- **Dynamism is free here and expensive there.** Compare the two pipeline rows on the Rust side:
+  the _same_ 4-stage chain costs 1.5 ns/el baked into the binary and 7.6 ns/el when assembled at
+  runtime through `Box<dyn Fn>` — a **~5× tax on dynamism**, paid in indirect calls and lost
+  fusion. moissanite composes at runtime and still fuses into one vectorized pass, so it runs
+  **~4× faster than runtime-composed Rust** while staying within ~1.2× of the hardcoded build.
+  That gap is the whole thesis in one table.
+- **Fused map-reduce reaches zero-cost-abstraction speed.** Folding the reduction in too means no
+  output buffer exists at all — input in, scalar out. Across runs moissanite lands at
+  1.7–2.1 ns/el, on top of Rust's compile-time-fused iterator chain at 2.1–2.2 ns/el. Rust's
+  headline zero-cost abstraction, matched by a pipeline that did not exist when the program
+  started — and ~4.8× ahead of the same chain composed at runtime in Rust.
 - **Parallel with plain threads.** `Fiddle` releases the GVL during native calls, so ordinary
   Ruby `Thread.new` scales native kernels across cores — 3.65× on 4 cores with a five-line
   dynamic work queue, bit-identical output. The Rust column would need rayon and a rebuild.
@@ -154,8 +161,21 @@ pipe.fuse.call(out, xs, n)       # one kernel, one pass over memory
 ```
 
 `pipe.stage_kernels` gives the same math as one kernel per stage — N passes over memory, the shape
-you get when you call a library function per stage. Fused is **3.1× faster** at 4M elements and
+you get when you call a library function per stage. Fused is **3.0× faster** at 4M elements and
 bit-identical (`test/pipeline_test.rb` pins that equality; the win is memory traffic, not math).
+
+Folding a reduction in removes the output buffer entirely — the intermediate values never reach
+memory at all:
+
+```ruby
+pipe.sum.call(xs, n)                                   # => Float, one pass, no allocation
+pipe.reduce(0.0, :peak) { |acc, v| acc.max(v) }        # any (acc, value) -> Expr combiner
+Moissanite::Pipeline.f64(arity: 2).map { |a, b| a * b }.sum.call(xs, ys, n)  # dot product
+```
+
+The accumulation is sequential in index order, so the oracle and every backend agree bit-for-bit
+even in floating point. Fusing the reduce is **1.8× faster** than mapping into a buffer and
+summing it.
 
 This is where computation-as-data pays off structurally. A statically compiled language fuses when
 the whole chain is visible at compile time (iterator chains, expression templates). When the chain
