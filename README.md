@@ -17,21 +17,28 @@ a differential battery pins the native backends bit-for-bit to the oracle.
 
 ## Numbers (Ruby 3.3, gcc 13 `-O3`, rustc 1.94 `--release` + LTO, same algorithm, same run)
 
-| workload                                         | moissanite                  | Rust (std, release) |
-| ------------------------------------------------ | --------------------------- | ------------------- |
-| mandelbrot 600×400, limit 500, 1 thread          | **115 ms** (checksum equal) | 113 ms              |
-| mandelbrot, 4 plain `Thread.new` + dynamic bands | **31 ms** (3.65× scaling)   | (needs rayon)       |
-| horner deg-8, runtime coefficients, per element  | **1.85 ns** (specialized)   | 3.32 ns (generic)   |
-| same kernels on the pure-Ruby oracle             | ~90× slower                 | —                   |
+| workload                                         | moissanite                     | Rust (std, release)     |
+| ------------------------------------------------ | ------------------------------ | ----------------------- |
+| mandelbrot 600×400, limit 500, 1 thread          | **115 ms** (checksum equal)    | 114 ms                  |
+| mandelbrot, 4 plain `Thread.new` + dynamic bands | **31 ms** (3.65× scaling)      | (needs rayon)           |
+| horner deg-8, runtime coefficients               | **1.85 ns/el** (specialized)   | 3.51 ns/el (generic)    |
+| 4-stage pipeline **composed at runtime**         | **1.91 ns/el** (fused, 1 pass) | 6.89 ns/el (dyn-chain)  |
+| the same pipeline hardcoded at compile time      | —                              | 1.40 ns/el (hand-fused) |
+| any of these on the pure-Ruby oracle             | ~90× slower                    | —                       |
 
-Three honest readings (absolute times vary with machine load; compare within one run):
+Four honest readings (absolute times vary with machine load; compare within one run):
 
 - **Parity at the floor.** A kernel written as Ruby data ties `rustc -O3` on a classic numeric
   loop, with an identical checksum — because it goes through the same class of optimizer.
 - **Ahead where AOT cannot follow.** The horner kernel is _built at runtime_, so coefficients
   that only exist at runtime are folded into the instruction stream before `-O3` sees them.
-  A stock AOT binary must stay generic. That is a structural advantage of computation-as-data.
-  (Rust could match it only by shipping its own JIT.)
+  A stock AOT binary must stay generic. (Rust could match it only by shipping its own JIT.)
+- **Dynamism is free here and expensive there.** Compare the last two Rust rows: the _same_
+  4-stage pipeline costs 1.40 ns/el baked into the binary and 6.89 ns/el when assembled at
+  runtime through `Box<dyn Fn>` — a **4.9× tax on dynamism**, paid in indirect calls and lost
+  fusion. moissanite composes at runtime and still fuses into one vectorized pass (1.91 ns/el),
+  so it runs **3.6× faster than runtime-composed Rust** while staying within 1.36× of the
+  hardcoded build. That gap is the whole thesis in one table.
 - **Parallel with plain threads.** `Fiddle` releases the GVL during native calls, so ordinary
   Ruby `Thread.new` scales native kernels across cores — 3.65× on 4 cores with a five-line
   dynamic work queue, bit-identical output. The Rust column would need rayon and a rebuild.
@@ -128,6 +135,41 @@ oracle, so `cc` and `tcc` are held to identical semantics.
 Environment knobs: `MOISSANITE_BACKEND=oracle|cc|tcc` (force), `MOISSANITE_CC` / `MOISSANITE_TCC`
 (compilers), `MOISSANITE_CACHE_DIR` (artifact cache).
 
+## Fusion: pipelines composed at runtime, executed as one pass
+
+A `Pipeline` is a chain of elementwise stages. Each stage is an ordinary Ruby block taking an
+expression and returning an expression, so composing stages is just function composition — and
+because stages are _values_, the whole chain folds into a single loop body:
+
+```ruby
+gain = load_from_config          # only exists at runtime
+
+pipe = Moissanite::Pipeline.f64
+                           .map { |v| (v * 2.0) + 1.0 }
+                           .map { |v| v.abs.sqrt }
+                           .map { |v| (v * gain) - 0.25 }
+                           .map { |v| v.min(3.0).max(-3.0) }
+
+pipe.fuse.call(out, xs, n)       # one kernel, one pass over memory
+```
+
+`pipe.stage_kernels` gives the same math as one kernel per stage — N passes over memory, the shape
+you get when you call a library function per stage. Fused is **3.1× faster** at 4M elements and
+bit-identical (`test/pipeline_test.rb` pins that equality; the win is memory traffic, not math).
+
+This is where computation-as-data pays off structurally. A statically compiled language fuses when
+the whole chain is visible at compile time (iterator chains, expression templates). When the chain
+is assembled at runtime — from config, a query, a plugin list — it falls back to indirect calls and
+separate passes. moissanite has the chain as data at exactly the moment it needs it.
+
+Two implementation notes worth knowing, both found by reading the generated assembly:
+
+- Each stage result is bound with `let`, so a stage that uses its input twice (`v * v`) does not
+  duplicate the subtree. Trees stay linear in stage count.
+- `min`/`max` are emitted as inlined helpers rather than libm `fmin`/`fmax`. gcc lowers `fmin` to a
+  PLT call _per element_ and gives up on vectorizing the loop; inlining the identical NaN rules
+  restored `sqrtpd` and made the fused pipeline **2.3× faster** with a bit-identical checksum.
+
 ## Parallelism
 
 `Fiddle::Function` releases the GVL while the native code runs, so kernels scale across cores
@@ -174,7 +216,7 @@ Two rules make parallel decomposition exact:
 ## Roadmap
 
 - **libgccjit / libtcc in-process backends** — same engines without subprocess or temp files
-- `i64`/`f32` buffers, optional bounds-checked native mode, kernel fusion along composition edges
+- `i64`/`f32` buffers, reductions and `zip` in `Pipeline`, optional bounds-checked native mode
 - berylx bridge: kernels as workflow task leaves (effect tree stays the linker)
 
 ## Development

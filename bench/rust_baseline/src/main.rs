@@ -36,6 +36,54 @@ fn horner(out: &mut [f64], xs: &[f64], coeffs: &[f64]) {
     }
 }
 
+// --- 4 段のパイプラインを 3 通りに実装して「実行時合成の代償」を測る ---
+//
+// 1. hand_fused  : コンパイル時にパイプライン全体が見えている形。Rust が
+//                  最も得意な状況 (インライン + ベクトル化 + 1 パス)。
+//                  ただし段の構成はバイナリに焼き付いていて変えられない。
+// 2. dyn_chain   : 段が実行時に決まる形 (Vec<Box<dyn Fn>>)。要素ごと・段ごとに
+//                  間接呼び出しが入り、インラインも融合も効かない。
+//                  AOT 言語が「実行時に組んだパイプライン」に払う代償。
+// 3. staged      : 段ごとに配列全体を舐める (ライブラリ関数を順に呼ぶ形)。
+//                  数学は同じでメモリ往復が段数倍になる。
+fn hand_fused(out: &mut [f64], xs: &[f64], gain: f64) {
+    for (o, &x) in out.iter_mut().zip(xs.iter()) {
+        let v = x * 2.0 + 1.0;
+        let v = v.abs().sqrt();
+        let v = v * gain - 0.25;
+        *o = v.min(3.0).max(-3.0);
+    }
+}
+
+fn dyn_chain(out: &mut [f64], xs: &[f64], stages: &[Box<dyn Fn(f64) -> f64>]) {
+    for (o, &x) in out.iter_mut().zip(xs.iter()) {
+        let mut v = x;
+        for stage in stages {
+            v = stage(v);
+        }
+        *o = v;
+    }
+}
+
+// ping-pong は 2 本のバッファの偶奇で表す (スライスは swap できないため)。
+fn staged(a: &mut [f64], b: &mut [f64], xs: &[f64], stages: &[Box<dyn Fn(f64) -> f64>]) {
+    for (i, stage) in stages.iter().enumerate() {
+        if i == 0 {
+            for (o, &v) in b.iter_mut().zip(xs.iter()) {
+                *o = stage(v);
+            }
+        } else if i % 2 == 1 {
+            for (o, &v) in a.iter_mut().zip(b.iter()) {
+                *o = stage(v);
+            }
+        } else {
+            for (o, &v) in b.iter_mut().zip(a.iter()) {
+                *o = stage(v);
+            }
+        }
+    }
+}
+
 fn bench<F: FnMut()>(label: &str, iters: u32, mut f: F) -> f64 {
     f();
     let t0 = Instant::now();
@@ -90,5 +138,57 @@ fn main() {
         "  checksum={:.6}  {:.2} ns/elem",
         po.iter().sum::<f64>(),
         sec * 1e9 / N as f64
+    );
+
+    // --- パイプライン: 融合 vs 実行時合成 ---
+    // gain は実行時入力 (env)。moissanite 側 bench.rb と同じ 4 段。
+    let gain: f64 = std::env::var("MOISSANITE_GAIN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.68026969420451366);
+    const FN_: usize = 4_000_000;
+    let fxs: Vec<f64> = (0..FN_).map(|_| next()).collect();
+    let mut fout = vec![0.0f64; FN_];
+    let mut ping = vec![0.0f64; FN_];
+    let mut pong = vec![0.0f64; FN_];
+
+    // hand_fused は純粋なので、black_box で囲わないと LLVM がループごと
+    // 消して 0ms になる (Rust 側を不当に速く見せる測定バグ)。
+    let s1 = bench("pipeline 4 stages [hand-fused rust]", 5, || {
+        hand_fused(
+            std::hint::black_box(&mut fout),
+            std::hint::black_box(&fxs),
+            std::hint::black_box(gain),
+        )
+    });
+    println!(
+        "  {:.2} ns/elem  checksum={:.6}  (段の構成はコンパイル時に固定)",
+        s1 * 1e9 / FN_ as f64,
+        fout.iter().sum::<f64>()
+    );
+
+    // 段を実行時に組み立てる (どの段が来るかはバイナリには入っていない)
+    let stages: Vec<Box<dyn Fn(f64) -> f64>> = vec![
+        Box::new(|v: f64| v * 2.0 + 1.0),
+        Box::new(|v: f64| v.abs().sqrt()),
+        Box::new(move |v: f64| v * gain - 0.25),
+        Box::new(|v: f64| v.min(3.0).max(-3.0)),
+    ];
+    let s2 = bench("pipeline 4 stages [dyn-chain rust]", 5, || {
+        dyn_chain(&mut fout, &fxs, &stages)
+    });
+    println!(
+        "  {:.2} ns/elem  checksum={:.6}  (実行時合成: 間接呼び出し・融合なし)",
+        s2 * 1e9 / FN_ as f64,
+        fout.iter().sum::<f64>()
+    );
+
+    let s3 = bench("pipeline 4 stages [staged passes rust]", 5, || {
+        staged(&mut ping, &mut pong, &fxs, &stages)
+    });
+    println!(
+        "  {:.2} ns/elem  checksum={:.6}  (段ごとに全配列を舐める)",
+        s3 * 1e9 / FN_ as f64,
+        pong.iter().sum::<f64>()
     );
 }

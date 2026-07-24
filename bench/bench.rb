@@ -170,6 +170,44 @@ end
 puts '  (小さい n の ns/elem 上昇分が FFI 境界の固定費)'
 puts
 
+# ---------------------------------------------------------------- 融合: 1 パス vs 段数パス
+# 実行時に組んだ 4 段のパイプラインを (a) 1 カーネルへ融合 (1 パス) と
+# (b) 段ごとの独立カーネル (4 パス) で比較する。数学は同一・最適化器も
+# 同一で、違うのはメモリ往復の回数だけ。大きな配列では帯域が律速なので
+# 差はそのまま速度差になる (結果のビット一致は test/pipeline_test.rb が固定)。
+FUSE_N = 4_000_000
+gain = Random.new(11).rand(0.5..1.5) # 実行時にしか判らない係数
+
+pipeline = Moissanite::Pipeline.f64
+                               .map { |v| (v * 2.0) + 1.0 }
+                               .map { |v| v.abs.sqrt }
+                               .map { |v| (v * gain) - 0.25 }
+                               .map { |v| v.min(3.0).max(-3.0) }
+
+fuse_xs = Moissanite::Buffer.f64(Array.new(FUSE_N) { rng.rand(-2.0..2.0) })
+fused_out = Moissanite::Buffer.f64(FUSE_N)
+ping = Moissanite::Buffer.f64(FUSE_N)
+pong = Moissanite::Buffer.f64(FUSE_N)
+fused_kernel = pipeline.fuse
+stage_kernels = pipeline.stage_kernels
+
+fused_sec = measure(5) { fused_kernel.call(fused_out, fuse_xs, FUSE_N) }
+staged_sec = measure(5) do
+  front = ping
+  back = pong
+  stage_kernels.each_with_index do |kernel, index|
+    kernel.call(back, index.zero? ? fuse_xs : front, FUSE_N)
+    front, back = back, front
+  end
+end
+row "pipeline #{pipeline.size} stages n=#{FUSE_N} [融合 1 パス]", fused_sec, FUSE_N
+row "pipeline #{pipeline.size} stages n=#{FUSE_N} [段別 #{pipeline.size} パス]", staged_sec, FUSE_N
+staged_result = stage_kernels.size.even? ? pong : ping
+puts format('  融合の利得 = %.2fx  identical = %s',
+            staged_sec / fused_sec, staged_result.to_a == fused_out.to_a)
+puts "  gain(実行時係数) = #{format('%.17g', gain)}"
+puts
+
 # ---------------------------------------------------------------- 特殊化レイテンシ (冷キャッシュ)
 # 「実行時にカーネルを組んで定数を畳み込む」往復の値段。生成物は
 # コンテンツアドレスされるので、これはユニークな式木の初回だけの費用。
@@ -196,8 +234,8 @@ end
 # ---------------------------------------------------------------- Rust 対抗を同じ係数で起動
 rust_bin = File.expand_path('rust_baseline/target/release/moissanite_rust_baseline', __dir__)
 if File.executable?(rust_bin)
-  puts '--- rust baseline (同係数) ---'
-  system(rust_bin, *coeffs.map(&:to_s))
+  puts '--- rust baseline (同係数・同 gain) ---'
+  system({ 'MOISSANITE_GAIN' => format('%.17g', gain) }, rust_bin, *coeffs.map(&:to_s))
 else
   puts '(rust baseline 未ビルド: cd bench/rust_baseline && cargo build --release して再実行すると対抗値が並ぶ)'
 end

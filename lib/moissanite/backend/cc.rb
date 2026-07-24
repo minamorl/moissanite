@@ -120,17 +120,42 @@ module Moissanite
 
         MATH_C = {
           sqrt: 'sqrt', sin: 'sin', cos: 'cos', exp: 'exp', log: 'log',
-          abs: 'fabs', min: 'fmin', max: 'fmax'
+          abs: 'fabs', min: 'mo_fmin', max: 'mo_fmax'
+        }.freeze
+
+        # libm の fmin/fmax は gcc が要素ごとの PLT 呼び出しへ落とし、
+        # ループのベクトル化ごと潰す (4 段パイプラインの実測で 2.5x の損失)。
+        # 意味論 (NaN 側を避ける = fmin/fmax の規則) を一切変えずにインライン
+        # 展開するため、同じ規則を static inline で自前に持つ。
+        # sqrt / sin / exp などは gcc が適切に扱う (sqrt は sqrtpd へベクトル化
+        # される) ので libm のまま使う。
+        HELPERS = {
+          'mo_fmin' => <<~C,
+            static inline double mo_fmin(double a, double b) {
+              if (a != a) return b;
+              if (b != b) return a;
+              return a < b ? a : b;
+            }
+          C
+          'mo_fmax' => <<~C
+            static inline double mo_fmax(double a, double b) {
+              if (a != a) return b;
+              if (b != b) return a;
+              return a > b ? a : b;
+            }
+          C
         }.freeze
 
         def source
           params = @kernel.params.map { |p| "#{C_TYPE.fetch(p.type)} #{p.name}" }.join(', ')
+          body = block(@kernel.body, 1)
+          helpers = HELPERS.filter_map { |name, code| code if body.include?(name) }.join("\n")
           <<~C
             #include <stdint.h>
             #include <math.h>
 
-            #{C_TYPE.fetch(@kernel.return_type)} #{SYMBOL}(#{params}) {
-            #{block(@kernel.body, 1)}}
+            #{helpers}#{C_TYPE.fetch(@kernel.return_type)} #{SYMBOL}(#{params}) {
+            #{body}}
           C
         end
 
