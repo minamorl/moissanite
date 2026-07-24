@@ -163,4 +163,51 @@ class PipelineTest < Minitest::Test
   def test_reduce_requires_a_block
     assert_raises(ArgumentError) { Moissanite::Pipeline.f64.reduce(0.0) }
   end
+
+  # --- 要素型 (入力は宣言、出力は段から推論) ---------------------------
+
+  def test_result_type_is_inferred_from_the_stages
+    assert_equal :f64, Moissanite::Pipeline.f64.result_type
+    assert_equal :i64, Moissanite::Pipeline.i64.result_type
+    assert_equal :i64, Moissanite::Pipeline.f64.map(&:to_i64).result_type
+    assert_equal :f64, Moissanite::Pipeline.i64.map(&:to_f64).map { |v| v * 0.5 }.result_type
+  end
+
+  def test_f64_input_with_i64_output_classifier
+    pipeline = Moissanite::Pipeline.f64.map { |v| Moissanite::Expr.select(v > 1.0, 1, 0) }
+    kernel = pipeline.fuse(:classify)
+    xs = buffer([0.5, 2.0, 1.5, -3.0])
+    out = Moissanite::Buffer.i64(4)
+    oracle = Moissanite::Buffer.i64(4)
+    kernel.call(out, xs, 4)
+    kernel.interpret(oracle, xs, 4)
+
+    assert_equal :i64_buf, kernel.params.first.type
+    assert_equal [0, 1, 1, 0], out.to_a
+    assert_equal oracle.to_a, out.to_a
+    # 数える畳み込みは i64 累積器になる (sum が結果型に追随する)。
+    assert_equal 2, pipeline.sum(:hits).call(xs, 4)
+  end
+
+  def test_i64_pipeline_end_to_end
+    pipeline = Moissanite::Pipeline.i64.map { |v| (v * 3) - 1 }
+    ints = Moissanite::Buffer.i64([1, 2, 3])
+    out = Moissanite::Buffer.i64(3)
+    pipeline.fuse(:tripler).call(out, ints, 3)
+
+    assert_equal [2, 5, 8], out.to_a
+    assert_equal 15, pipeline.sum(:isum).call(ints, 3)
+  end
+
+  def test_stage_kernels_track_changing_element_types
+    pipeline = Moissanite::Pipeline.f64.map(&:to_i64).map { |v| v * 2 }
+    types = pipeline.stage_kernels(:mixed).map { |kernel| kernel.params.map(&:type) }
+
+    assert_equal [%i[i64_buf f64_buf i64], %i[i64_buf i64_buf i64]], types
+  end
+
+  def test_bad_element_type_is_rejected
+    assert_raises(ArgumentError) { Moissanite::Pipeline.of(:bool) }
+    assert_raises(ArgumentError) { Moissanite::Pipeline.of(:f32) }
+  end
 end

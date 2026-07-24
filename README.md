@@ -205,6 +205,15 @@ pipe.reduce(0.0, :peak) { |acc, v| acc.max(v) }        # any (acc, value) -> Exp
 Moissanite::Pipeline.f64(arity: 2).map { |a, b| a * b }.sum.call(xs, ys, n)  # dot product
 ```
 
+Input element type is declared (`Pipeline.f64` / `Pipeline.i64`); the **output type is inferred
+from the stages**, so a pipeline can read one type and write another — and `sum` follows it:
+
+```ruby
+hits = Moissanite::Pipeline.f64.map { |v| Moissanite::Expr.select(v > threshold, 1, 0) }
+hits.fuse.call(flags, xs, n)   # flags is an i64 buffer; the signature says so
+hits.sum.call(xs, n)           # => Integer count, i64 accumulator
+```
+
 The accumulation is sequential in index order, so the oracle and every backend agree bit-for-bit
 even in floating point. Fusing the reduce is **1.8× faster** than mapping into a buffer and
 summing it.
