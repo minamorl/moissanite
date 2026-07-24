@@ -50,16 +50,41 @@ module Moissanite
         Compiled.new(kernel, fn, handle, tag)
       end
 
+      # 生成物はコンテンツアドレス (source の SHA-256 + toolchain) された
+      # 共有キャッシュに置く。ここで素朴に共有パスへ直接書くと競走になる:
+      # fork するアプリサーバや並列テストでは、同じ式木を複数プロセスが
+      # 同時にコンパイルしうるので、書きかけの .so を別プロセスが dlopen
+      # してしまう。一意な一時パスへ出してから rename で差し込む
+      # (同一ファイルシステム上の rename は不可分なので、他プロセスから
+      # 見えるのは「無い」か「完成品」だけになる)。
       def ensure_compiled(source)
         dir = cache_dir
         digest = Digest::SHA256.hexdigest(source)
         so_path = File.join(dir, "#{digest}-#{tag}.so")
         return so_path if File.exist?(so_path)
 
-        c_path = File.join(dir, "#{digest}.c")
-        File.write(c_path, source)
-        run_compiler(c_path, so_path)
+        build_atomically(dir, digest, source, so_path)
         so_path
+      end
+
+      def build_atomically(dir, digest, source, so_path)
+        stem = File.join(dir, "#{digest}-#{tag}-#{unique_suffix}")
+        c_path = "#{stem}.c"
+        staged_so = "#{stem}.so"
+        File.write(c_path, source)
+        run_compiler(c_path, staged_so)
+        File.rename(staged_so, so_path)
+        # 発行した C は検査できるよう残す (source_c と同じ内容)。
+        File.rename(c_path, File.join(dir, "#{digest}.c"))
+      ensure
+        FileUtils.rm_f([c_path, staged_so].compact)
+      end
+
+      # プロセス・スレッド・呼び出しをまたいで衝突しない接尾辞。
+      def unique_suffix
+        @suffix_mutex ||= Mutex.new
+        serial = @suffix_mutex.synchronize { @suffix_serial = (@suffix_serial || 0) + 1 }
+        "#{Process.pid}-#{serial}"
       end
 
       def run_compiler(c_path, so_path)
