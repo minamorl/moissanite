@@ -1,0 +1,103 @@
+plugins:
+  - rubocop-minitest
+
+AllCops:
+  NewCops: enable
+  TargetRubyVersion: 3.2
+  SuggestExtensions: false
+  Exclude:
+    - vendor/**/*
+    - tmp/**/*
+
+Style/Documentation:
+  Enabled: false
+
+Metrics/AbcSize:
+  Max: 20
+  Exclude:
+    - test/**/*
+    - bench/**/*
+    # インタプリタ / エミッタの中心 case 表 (下の MethodLength と同じ理由)。
+    - lib/moissanite/oracle.rb
+    - lib/moissanite/backend/cc.rb
+
+Metrics/MethodLength:
+  Max: 20
+  Exclude:
+    - test/**/*
+    - bench/**/*
+    # インタプリタ / エミッタの中心は「ノード種別 → 意味」の対応表 (case)。
+    # 分割すると対応表としての一覧性 (= 意味論の読みやすさ) が壊れるので、
+    # この 2 ファイルだけ表の長さを許す。
+    - lib/moissanite/oracle.rb
+    - lib/moissanite/backend/cc.rb
+
+Metrics/CyclomaticComplexity:
+  Exclude:
+    - lib/moissanite/oracle.rb
+    - lib/moissanite/backend/cc.rb
+    - bench/**/*
+    - test/equivalence_test.rb
+
+# kernel の DSL ブロックはシグネチャがそのまま並ぶ (out, xs, n, ...)。
+# メソッド定義ではないので上限を課さない。
+Metrics/ParameterLists:
+  Exclude:
+    - bench/**/*
+    - test/**/*
+
+Metrics/BlockLength:
+  Exclude:
+    - test/**/*
+    - bench/**/*
+    - "*.gemspec"
+
+Metrics/ClassLength:
+  Exclude:
+    - test/**/*
+    - lib/moissanite/oracle.rb
+
+Metrics/ModuleLength:
+  Exclude:
+    - lib/moissanite/expr.rb
+    - lib/moissanite/backend/cc.rb
+
+# DSL の式 (Expr) に対する誤検出を止める:
+#   n > 0 は「数値の判定」ではなく「bool 式ノードの構築」なので
+#   .positive? への書き換えは意味を壊す。
+Style/NumericPredicate:
+  Enabled: false
+
+# RandomExpr の f64(d) > f64(d) は呼ぶたびに乱数で別の式を生む。
+# 「同一オペランド」は誤検出。
+Lint/BinaryOperatorWithIdenticalOperands:
+  Exclude:
+    - test/equivalence_test.rb
+
+# f64 / i64 は型の名前そのもの。
+Naming/VariableNumber:
+  AllowedIdentifiers:
+    - f64
+    - i64
+    - to_f64
+    - to_i64
+    - f64_buf
+
+Naming/MethodParameterName:
+  AllowedNames:
+    - k
+    - x
+    - y
+    - n
+    - m
+    - a
+    - b
+    - op
+
+Style/FormatStringToken:
+  Exclude:
+    - bench/**/*
+
+Minitest/MultipleAssertions:
+  Exclude:
+    - test/**/*

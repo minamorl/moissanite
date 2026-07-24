@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ruby:
+    name: Ruby ${{ matrix.ruby }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.2", "3.3", "3.4", "4.0"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      # ubuntu runner には cc がいるので差分検証 (oracle vs cc) まで走る。
+      - name: Run tests (auto backend)
+        run: bundle exec rake test
+
+      # backend を oracle に固定しても全テストが通る = fallback 鎖の保証。
+      - name: Run tests (oracle forced)
+        run: bundle exec rake test
+        env:
+          MOISSANITE_BACKEND: oracle
+
+      - name: Run RuboCop
+        run: bundle exec rubocop
+
+      - name: Build gem
+        run: gem build moissanite.gemspec
+
+  prettier:
+    name: Prettier
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Check formatting
+        run: npm run format:check

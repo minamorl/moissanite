@@ -1,0 +1,190 @@
+# frozen_string_literal: true
+
+require 'minitest/autorun'
+require 'moissanite'
+
+# 差分検証 — moissanite の道徳的中心。
+#
+# oracle (純 Ruby) が意味論の正典であり、native backend の正しさの定義は
+# 「oracle と同じ値を返すこと」以外に存在しない。構造化カーネル一式と、
+# シード固定のランダム式バッテリーの両方で oracle vs cc を突き合わせる。
+class EquivalenceTest < Minitest::Test
+  def setup
+    skip 'no working C toolchain: cc backend untestable' unless Moissanite::Backend::Cc.available?
+  end
+
+  # f64 は NaN 同士を除きビット一致を要求する。
+  def assert_same_value(oracle, native, context)
+    if oracle.is_a?(Float) && oracle.nan?
+      assert_predicate native, :nan?, context
+    else
+      assert_equal oracle, native, context
+    end
+  end
+
+  def assert_kernel_equivalent(kernel, arg_tuples)
+    compiled = Moissanite::Backend::Cc.compile(kernel)
+
+    arg_tuples.each do |args|
+      assert_same_value kernel.interpret(*args), compiled.call(*args), "#{kernel.name}(#{args.inspect})"
+    end
+  end
+
+  def test_mandelbrot_point
+    kernel = Moissanite.kernel(:mandel, cr: :f64, ci: :f64, limit: :i64) do |k, cr, ci, limit|
+      zr = k.let(0.0)
+      zi = k.let(0.0)
+      n = k.let(0)
+      k.count(limit) do |i|
+        t = k.let((zr * zr) - (zi * zi) + cr)
+        k.assign(zi, (2.0 * zr * zi) + ci)
+        k.assign(zr, t)
+        k.break_if((zr * zr) + (zi * zi) > 4.0)
+        k.assign(n, i + 1)
+      end
+      k.ret n
+    end
+
+    points = [[0.0, 0.0], [2.0, 2.0], [-0.75, 0.1], [0.285, 0.01], [-1.401155, 0.0]]
+
+    assert_kernel_equivalent(kernel, points.map { |cr, ci| [cr, ci, 500] })
+  end
+
+  def test_i64_wrap_div_mod
+    kernel = Moissanite.kernel(:wrapmix, a: :i64, b: :i64) do |k, a, b|
+      prod = k.let(a * b)
+      k.ret_if b.eq(0), prod
+      k.ret ((prod + (a / b)) % 1000) + (a % b)
+    end
+
+    tuples = [[2**62, 3], [-7, 2], [7, -2], [-9, -4], [(2**63) - 1, 1], [123, 0]]
+
+    assert_kernel_equivalent kernel, tuples
+  end
+
+  def test_buffer_store_load_roundtrip
+    kernel = Moissanite.kernel(:stencil, out: :f64_buf, xs: :f64_buf, n: :i64) do |k, out, xs, n|
+      k.count(n) do |i|
+        left = k.select(i.eq(0), 0.0, xs[k.select(i.eq(0), 0, i - 1)])
+        k.store(out, i, (left + xs[i]) * 0.5)
+      end
+      k.ret 0
+    end
+
+    xs = Moissanite::Buffer.f64([1.0, 2.0, 4.0, 8.0])
+    out_oracle = Moissanite::Buffer.f64(4)
+    out_native = Moissanite::Buffer.f64(4)
+    kernel.interpret(out_oracle, xs, 4)
+    Moissanite::Backend::Cc.compile(kernel).call(out_native, xs, 4)
+
+    assert_equal out_oracle.to_a, out_native.to_a
+  end
+
+  def test_control_flow_mix
+    kernel = Moissanite.kernel(:ctrl, x: :f64, n: :i64) do |k, x, n|
+      acc = k.let(0.0)
+      k.count(n) do |i|
+        k.if_else(
+          (i % 2).eq(0),
+          -> { k.assign(acc, acc + x) },
+          -> { k.assign(acc, acc - (x * 0.5)) }
+        )
+        k.ret_if acc > 100.0, acc
+      end
+      k.ret acc
+    end
+
+    assert_kernel_equivalent kernel, [[1.5, 10], [50.0, 10], [-3.25, 7], [0.1, 1000]]
+  end
+
+  def test_specialized_polynomial_matches
+    coeffs = [1.25, -0.5, 3.0, 0.125, -2.0]
+    kernel = Moissanite.kernel(:poly, out: :f64_buf, xs: :f64_buf, n: :i64) do |k, out, xs, n|
+      k.count(n) do |i|
+        x = k.let(xs[i])
+        acc = k.let(coeffs.first)
+        coeffs.drop(1).each { |c| k.assign(acc, (acc * x) + c) }
+        k.store(out, i, acc)
+      end
+      k.ret 0
+    end
+
+    xs = Moissanite::Buffer.f64([-2.0, -0.5, 0.0, 0.3, 1.7])
+    a = Moissanite::Buffer.f64(5)
+    b = Moissanite::Buffer.f64(5)
+    kernel.interpret(a, xs, 5)
+    Moissanite::Backend::Cc.compile(kernel).call(b, xs, 5)
+
+    assert_equal a.to_a, b.to_a
+  end
+
+  # シード固定のランダム式バッテリー: 定義済み意味論の範囲で式木を生成し、
+  # oracle と native の一致を数値で殴って確かめる。
+  def test_random_expression_battery
+    rng = Random.new(42)
+    30.times do |case_index|
+      kernel = Moissanite.kernel(:"rand#{case_index}", a: :f64, b: :f64, m: :i64, n: :i64) do |k, *params|
+        gen = RandomExpr.new(rng, params)
+        k.ret gen.f64(3)
+      end
+      inputs = Array.new(6) { [rng.rand(-2.0..2.0), rng.rand(-2.0..2.0), rng.rand(-1000..1000), rng.rand(-1000..1000)] }
+
+      assert_kernel_equivalent kernel, inputs
+    end
+  end
+
+  # 意味論が定義済みの演算だけで式木を作る生成器 (0 除算・範囲外 cast は
+  # 生成しない — それらは未定義でなく「oracle が raise する」領域で、
+  # oracle_test が固定している)。
+  class RandomExpr
+    def initialize(rng, params)
+      @rng = rng
+      @a, @b, @m, @n = params
+    end
+
+    def f64(depth)
+      if depth.zero?
+        return @rng.rand(3) == 0 ? Moissanite::Expr.lift(@rng.rand(-2.0..2.0),
+                                                         :f64) : [@a, @b].sample(random: @rng)
+      end
+
+      case @rng.rand(6)
+      when 0 then f64(depth - 1) + f64(depth - 1)
+      when 1 then f64(depth - 1) - f64(depth - 1)
+      when 2 then f64(depth - 1) * f64(depth - 1)
+      when 3 then f64(depth - 1) / f64(depth - 1)
+      when 4 then i64(depth - 1).to_f64
+      when 5 then Moissanite::Expr.select(bool(depth - 1), f64(depth - 1), f64(depth - 1))
+      end
+    end
+
+    def i64(depth)
+      if depth.zero?
+        return @rng.rand(3) == 0 ? Moissanite::Expr.lift(@rng.rand(-50..50),
+                                                         :i64) : [@m, @n].sample(random: @rng)
+      end
+
+      case @rng.rand(5)
+      when 0 then i64(depth - 1) + i64(depth - 1)
+      when 1 then i64(depth - 1) - i64(depth - 1)
+      when 2 then i64(depth - 1) * i64(depth - 1)
+      when 3 then i64(depth - 1) / Moissanite::Expr.lift(@rng.rand(1..9), :i64)
+      when 4 then Moissanite::Expr.select(bool(depth - 1), i64(depth - 1), i64(depth - 1))
+      end
+    end
+
+    def bool(depth)
+      base = @rng.rand(2).zero? ? f64(depth) > f64(depth) : i64(depth) <= i64(depth)
+      case @rng.rand(4)
+      when 0 then base & bool_leaf
+      when 1 then base | bool_leaf
+      when 2 then base.not
+      else base
+      end
+    end
+
+    def bool_leaf
+      @rng.rand(2).zero? ? (@a > 0.0) : @m.ne(0)
+    end
+  end
+end

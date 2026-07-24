@@ -1,0 +1,25 @@
+# Bundler / Ruby
+/.bundle/
+/vendor/bundle/
+Gemfile.lock
+*.gem
+/pkg/
+/coverage/
+
+# Node / formatter tooling
+node_modules/
+package-lock.json
+
+# Rust baseline build artifacts
+bench/rust_baseline/target/
+bench/rust_baseline/Cargo.lock
+
+# Local runtime / temp
+/tmp/
+*.log
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
