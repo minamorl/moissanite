@@ -63,6 +63,24 @@ module Moissanite
       Expr.cast(:i64, self)
     end
 
+    # libm 系 (f64 のみ)。oracle も backend も同じ libm を呼ぶので
+    # ビット一致が保たれる (負数 sqrt/log は C 準拠で NaN)。
+    %i[sqrt sin cos exp log].each do |fn|
+      define_method(fn) { Expr.math1(fn, self) }
+    end
+
+    def abs
+      Expr.math1(:abs, self)
+    end
+
+    def min(other)
+      Expr.math2(:min, self, other)
+    end
+
+    def max(other)
+      Expr.math2(:max, self, other)
+    end
+
     # 2.0 * expr のような「Ruby リテラルが左」の式を成立させる。
     # Ruby の coerce プロトコルで [リテラルの持ち上げ, self] を返す。
     def coerce(other)
@@ -125,6 +143,12 @@ module Moissanite
     def to_sexp = [:load, buf.to_sexp, index.to_sexp]
   end
 
+  MathOp = Data.define(:type, :fn, :args) do
+    include Ops
+
+    def to_sexp = [fn, *args.map(&:to_sexp)]
+  end
+
   # 式の構築規則 (型付け) を一箇所に集める。
   module Expr
     module_function
@@ -170,9 +194,25 @@ module Moissanite
 
     def node?(value)
       case value
-      when Const, Param, Local, BinOp, Not, Cast, Select, Load then true
+      when Const, Param, Local, BinOp, Not, Cast, Select, Load, MathOp then true
       else false
       end
+    end
+
+    # 単項 libm (f64 のみ)。
+    def math1(fn, operand)
+      e = lift_any(operand)
+      raise TypeMismatch, "#{fn} is defined on f64 only, got #{e.type}" unless e.type == :f64
+
+      MathOp.new(type: :f64, fn: fn, args: [e].freeze)
+    end
+
+    # 二項 libm (fmin / fmax 意味論: 片方が NaN ならもう片方を返す)。
+    def math2(fn, lhs, rhs)
+      l, r = unify(lhs, rhs)
+      raise TypeMismatch, "#{fn} is defined on f64 only, got #{l.type}" unless l.type == :f64
+
+      MathOp.new(type: :f64, fn: fn, args: [l, r].freeze)
     end
 
     # 二項算術: 両辺を同じ数値型に揃える (リテラルは相手の型へ持ち上げ)。

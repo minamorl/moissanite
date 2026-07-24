@@ -87,8 +87,33 @@ module Moissanite
       when Cast then eval_cast(expr)
       when Select then eval_expr(expr.cond) ? eval_expr(expr.then_e) : eval_expr(expr.else_e)
       when Load then @args[expr.buf.index][eval_expr(expr.index)]
+      when MathOp then eval_math(expr)
       else raise Error, "unknown expression #{expr.inspect}"
       end
+    end
+
+    # libm と同じ意味論 (負域は C 準拠で NaN、fmin/fmax は NaN を避ける)。
+    # Ruby の Math.* も同じ libm を呼ぶのでビットまで一致する。
+    def eval_math(expr)
+      values = expr.args.map { |a| eval_expr(a) }
+      case expr.fn
+      when :sqrt then values[0].negative? ? Float::NAN : Math.sqrt(values[0])
+      when :log then values[0].negative? ? Float::NAN : Math.log(values[0])
+      when :sin then Math.sin(values[0])
+      when :cos then Math.cos(values[0])
+      when :exp then Math.exp(values[0])
+      when :abs then values[0].abs
+      when :min then math_minmax(values[0], values[1]) { |a, b| [a, b].min }
+      when :max then math_minmax(values[0], values[1]) { |a, b| [a, b].max }
+      else raise Error, "unknown math fn #{expr.fn}"
+      end
+    end
+
+    def math_minmax(first, second)
+      return second if first.nan?
+      return first if second.nan?
+
+      yield(first, second)
     end
 
     def eval_binop(expr)

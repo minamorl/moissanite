@@ -107,10 +107,16 @@ module Moissanite
           @kernel = kernel
         end
 
+        MATH_C = {
+          sqrt: 'sqrt', sin: 'sin', cos: 'cos', exp: 'exp', log: 'log',
+          abs: 'fabs', min: 'fmin', max: 'fmax'
+        }.freeze
+
         def source
           params = @kernel.params.map { |p| "#{C_TYPE.fetch(p.type)} #{p.name}" }.join(', ')
           <<~C
             #include <stdint.h>
+            #include <math.h>
 
             #{C_TYPE.fetch(@kernel.return_type)} #{SYMBOL}(#{params}) {
             #{block(@kernel.body, 1)}}
@@ -165,6 +171,7 @@ module Moissanite
           when Cast then "((#{C_TYPE.fetch(node.type)})#{expr(node.expr)})"
           when Select then "(#{expr(node.cond)} ? #{expr(node.then_e)} : #{expr(node.else_e)})"
           when Load then "#{node.buf.name}[#{expr(node.index)}]"
+          when MathOp then "#{MATH_C.fetch(node.fn)}(#{node.args.map { |a| expr(a) }.join(', ')})"
           else raise Error, "unknown expression #{node.inspect}"
           end
         end

@@ -15,22 +15,26 @@ no code generator to maintain. The tree _is_ the AST from birth, and native back
 GCC/Clang's optimizer instead of reimplementing one. Correctness is not argued — it is measured:
 a differential battery pins the native backends bit-for-bit to the oracle.
 
-## Numbers (Ruby 3.3, gcc 13 `-O3`, rustc 1.94 `--release` + LTO, same algorithm, same evaluation order)
+## Numbers (Ruby 3.3, gcc 13 `-O3`, rustc 1.94 `--release` + LTO, same algorithm, same run)
 
-| workload                                        | moissanite                 | Rust (std, release) |
-| ----------------------------------------------- | -------------------------- | ------------------- |
-| mandelbrot 600×400, limit 500                   | **73 ms** (checksum equal) | 76 ms               |
-| horner deg-8, runtime coefficients, per element | **1.39 ns** (specialized)  | 2.90 ns (generic)   |
-| same kernel on the pure-Ruby oracle             | ~98× slower                | —                   |
+| workload                                         | moissanite                  | Rust (std, release) |
+| ------------------------------------------------ | --------------------------- | ------------------- |
+| mandelbrot 600×400, limit 500, 1 thread          | **115 ms** (checksum equal) | 113 ms              |
+| mandelbrot, 4 plain `Thread.new` + dynamic bands | **31 ms** (3.65× scaling)   | (needs rayon)       |
+| horner deg-8, runtime coefficients, per element  | **1.85 ns** (specialized)   | 3.32 ns (generic)   |
+| same kernels on the pure-Ruby oracle             | ~90× slower                 | —                   |
 
-Two honest readings:
+Three honest readings (absolute times vary with machine load; compare within one run):
 
 - **Parity at the floor.** A kernel written as Ruby data ties `rustc -O3` on a classic numeric
   loop, with an identical checksum — because it goes through the same class of optimizer.
 - **Ahead where AOT cannot follow.** The horner kernel is _built at runtime_, so coefficients
   that only exist at runtime are folded into the instruction stream before `-O3` sees them.
-  A stock AOT binary must stay generic. That is a structural advantage of computation-as-data,
-  and it is worth 2× here. (Rust could match it only by shipping its own JIT.)
+  A stock AOT binary must stay generic. That is a structural advantage of computation-as-data.
+  (Rust could match it only by shipping its own JIT.)
+- **Parallel with plain threads.** `Fiddle` releases the GVL during native calls, so ordinary
+  Ruby `Thread.new` scales native kernels across cores — 3.65× on 4 cores with a five-line
+  dynamic work queue, bit-identical output. The Rust column would need rayon and a rebuild.
 
 Reproduce: `rake bench` — it runs the Ruby side and, if built, the Rust baseline with the same
 coefficients (`cd bench/rust_baseline && cargo build --release`).
@@ -90,19 +94,20 @@ out.to_a
 
 ## Semantics (pinned by the oracle, enforced on backends by the differential battery)
 
-| topic         | rule                                                                               |
-| ------------- | ---------------------------------------------------------------------------------- |
-| types         | `:f64` (IEEE 754 double), `:i64` (64-bit two's complement), `:bool`; `:f64_buf`    |
-| i64 overflow  | wraps (backends compile with `-fwrapv`)                                            |
-| i64 `/` `%`   | truncate toward zero, remainder follows the dividend (C semantics, not Ruby's)     |
-| i64 `/ 0`     | oracle raises `MathError`; native is undefined — guard before dividing             |
-| f64           | bit-exact with Ruby `Float` (`-ffp-contract=off`, hex-float constants)             |
-| `&` `\|`      | bool-only, short-circuit in both levels                                            |
-| casts         | `.to_f64`, `.to_i64` (truncates toward zero; out-of-range raises in the oracle)    |
-| mixed types   | never implicit — `f64 + i64` is a build-time `TypeMismatch`                        |
-| `count(n)`    | `n` evaluated once at loop entry; `break_if` exits the innermost loop              |
-| buffer bounds | oracle checks and raises `IndexError`; native trusts the caller (N1: checked mode) |
-| falling off   | impossible — kernels must end in `k.ret`, validated at build                       |
+| topic         | rule                                                                                                                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| types         | `:f64` (IEEE 754 double), `:i64` (64-bit two's complement), `:bool`; `:f64_buf`                                                                                                         |
+| i64 overflow  | wraps (backends compile with `-fwrapv`)                                                                                                                                                 |
+| i64 `/` `%`   | truncate toward zero, remainder follows the dividend (C semantics, not Ruby's)                                                                                                          |
+| i64 `/ 0`     | oracle raises `MathError`; native is undefined — guard before dividing                                                                                                                  |
+| f64           | bit-exact with Ruby `Float` (`-ffp-contract=off`, hex-float constants)                                                                                                                  |
+| `&` `\|`      | bool-only, short-circuit in both levels                                                                                                                                                 |
+| casts         | `.to_f64`, `.to_i64` (truncates toward zero; out-of-range raises in the oracle)                                                                                                         |
+| mixed types   | never implicit — `f64 + i64` is a build-time `TypeMismatch`                                                                                                                             |
+| `count(n)`    | `n` evaluated once at loop entry; `break_if` exits the innermost loop                                                                                                                   |
+| libm          | `.sqrt .sin .cos .exp .log .abs .min .max` (f64) — same libm as Ruby's `Math`, so bit-identical; negative `sqrt`/`log` give C's quiet `NaN`, `min`/`max` follow `fmin`/`fmax` NaN rules |
+| buffer bounds | oracle checks and raises `IndexError`; native trusts the caller (N2: checked mode)                                                                                                      |
+| falling off   | impossible — kernels must end in `k.ret`, validated at build                                                                                                                            |
 
 ## Backends
 
@@ -115,6 +120,36 @@ Selection is a fallback chain — **it works everywhere, and is fast where it ca
 
 Environment knobs: `MOISSANITE_BACKEND=oracle|cc` (force), `MOISSANITE_CC` (compiler),
 `MOISSANITE_CACHE_DIR` (artifact cache).
+
+## Parallelism
+
+`Fiddle::Function` releases the GVL while the native code runs, so kernels scale across cores
+with ordinary Ruby threads — no Ractors, no C threading, no unsafe. `Buffer#view(offset, size)`
+gives zero-copy disjoint windows of one buffer, which makes concurrent writes safe by
+construction (different threads touch different addresses):
+
+```ruby
+queue = Queue.new
+bands.times { |s| queue << s }
+threads = 4.times.map do
+  Thread.new do
+    while (s = queue.pop(true) rescue nil)
+      window = out.view(s * band_rows * w, band_rows * w)
+      mandel.call(window, w, band_rows, s * band_rows, x0, y0, dx, dy, limit)
+    end
+  end
+end
+threads.each(&:join)
+```
+
+Two rules make parallel decomposition exact:
+
+- **Slice with index offsets, not coordinate offsets.** Pass `y_off: :i64` and compute
+  `(y + y_off) * dy` inside the kernel; pre-adding `y0 + slice * rows * dy` outside changes
+  floating-point rounding and the slices stop being bit-identical to the whole run
+  (`test/parallel_test.rb` pins the bit-identical decomposition).
+- **Balance with a queue.** Workloads like mandelbrot are row-skewed; a five-line dynamic band
+  queue restores near-linear scaling where static blocks stall.
 
 ## The five laws
 
@@ -133,8 +168,7 @@ Environment knobs: `MOISSANITE_BACKEND=oracle|cc` (force), `MOISSANITE_CC` (comp
 
 - **libgccjit backend** — same GCC optimizer, in-process through FFI, no subprocess or temp files
 - **libtcc backend** — instant in-process compilation for low-latency specialization
-- GVL release on buffer-only kernels (true parallelism), `i64`/`f32` buffers, optional
-  bounds-checked native mode, kernel fusion along composition edges
+- `i64`/`f32` buffers, optional bounds-checked native mode, kernel fusion along composition edges
 - berylx bridge: kernels as workflow task leaves (effect tree stays the linker)
 
 ## Development

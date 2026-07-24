@@ -118,6 +118,18 @@ class EquivalenceTest < Minitest::Test
     assert_equal a.to_a, b.to_a
   end
 
+  def test_math_functions_match_libm
+    kernel = Moissanite.kernel(:mathmix, x: :f64, y: :f64) do |k, x, y|
+      a = k.let(x.abs.sqrt + y.sin + x.cos)
+      b = k.let((x.exp.min(1e10) + (y.abs + 1.0e-9).log).max(a))
+      k.ret k.select(x > y, a.min(b), a.max(b)) + x.sqrt
+    end
+
+    tuples = [[0.5, -1.25], [-2.0, 3.0], [4.0, 0.0], [-0.75, -0.1], [9.0, 2.5]]
+
+    assert_kernel_equivalent kernel, tuples
+  end
+
   # シード固定のランダム式バッテリー: 定義済み意味論の範囲で式木を生成し、
   # oracle と native の一致を数値で殴って確かめる。
   def test_random_expression_battery
@@ -148,13 +160,16 @@ class EquivalenceTest < Minitest::Test
                                                          :f64) : [@a, @b].sample(random: @rng)
       end
 
-      case @rng.rand(6)
+      case @rng.rand(9)
       when 0 then f64(depth - 1) + f64(depth - 1)
       when 1 then f64(depth - 1) - f64(depth - 1)
       when 2 then f64(depth - 1) * f64(depth - 1)
       when 3 then f64(depth - 1) / f64(depth - 1)
       when 4 then i64(depth - 1).to_f64
       when 5 then Moissanite::Expr.select(bool(depth - 1), f64(depth - 1), f64(depth - 1))
+      when 6 then f64(depth - 1).abs.sqrt
+      when 7 then f64(depth - 1).sin
+      when 8 then f64(depth - 1).min(f64(depth - 1))
       end
     end
 

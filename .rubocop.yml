@@ -93,6 +93,7 @@ Naming/MethodParameterName:
     - a
     - b
     - op
+    - fn
 
 Style/FormatStringToken:
   Exclude:

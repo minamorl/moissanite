@@ -10,6 +10,7 @@
 #   cd bench/rust_baseline && cargo build --release
 #   ./target/release/moissanite_rust_baseline
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
+require 'etc'
 require 'moissanite'
 
 def measure(iters, &)
@@ -32,12 +33,16 @@ W = 600
 H = 400
 LIMIT = 500
 
-mandel = Moissanite.kernel(:mandel_grid, out: :f64_buf, w: :i64, h: :i64, x0: :f64, y0: :f64,
-                                         dx: :f64, dy: :f64, limit: :i64) do |k, out, w, h, x0, y0, dx, dy, limit|
+# 行オフセット (y_off) で分割可能な形。座標前送りでなくオフセット渡しに
+# するのは、浮動小数の非結合性で分割結果の ci が ulp ずれないようにするため
+# (これで並列分割は全体実行と構造的にビット一致する)。
+mandel = Moissanite.kernel(:mandel_grid, out: :f64_buf, w: :i64, h: :i64, y_off: :i64, x0: :f64,
+                                         y0: :f64, dx: :f64, dy: :f64,
+                                         limit: :i64) do |k, out, w, h, y_off, x0, y0, dx, dy, limit|
   k.count(h) do |y|
     k.count(w) do |x|
       cr = k.let(x0 + (x.to_f64 * dx))
-      ci = k.let(y0 + (y.to_f64 * dy))
+      ci = k.let(y0 + ((y + y_off).to_f64 * dy))
       zr = k.let(0.0)
       zi = k.let(0.0)
       n = k.let(0)
@@ -55,14 +60,48 @@ mandel = Moissanite.kernel(:mandel_grid, out: :f64_buf, w: :i64, h: :i64, x0: :f
 end
 
 out = Moissanite::Buffer.f64(W * H)
-args = [out, W, H, -2.5, -1.0, 3.5 / W, 2.0 / H, LIMIT]
+args = [out, W, H, 0, -2.5, -1.0, 3.5 / W, 2.0 / H, LIMIT]
 native = measure(3) { mandel.call(*args) }
 checksum = out.sum
 row "mandelbrot #{W}x#{H} limit=#{LIMIT}  [cc]", native
-tiny = [out, W, 4, -2.5, -1.0, 3.5 / W, 2.0 / H, LIMIT] # oracle は 1/100 の行数で測って外挿
+tiny = [out, W, 4, 0, -2.5, -1.0, 3.5 / W, 2.0 / H, LIMIT] # oracle は 1/100 の行数で測って外挿
 oracle = measure(1) { mandel.interpret(*tiny) } * (H / 4.0)
 row 'mandelbrot (oracle, 外挿)', oracle
 puts format('  checksum=%.1f  oracle/cc = %.0fx', checksum, oracle / native)
+puts
+
+# ---------------------------------------------------------------- 並列: GVL 解放の実証
+# Fiddle::Function 呼び出し中は GVL が解放されるので、素の Thread.new と
+# 互いに素な Buffer#view だけで全コアが回る (分割のビット一致は
+# test/parallel_test.rb が固定)。mandelbrot は行ごとに計算量が偏るので、
+# 行バンドを Queue で配る動的スケジューリング (素の Ruby 5 行) で均す —
+# Rust なら rayon を持ち出す所が、ここではただのコードになる。
+dy = 2.0 / H
+band_rows = 25
+bands = H / band_rows
+[2, 4].each do |threads|
+  next if threads > Etc.nprocessors
+
+  sliced = Moissanite::Buffer.f64(W * H)
+  sec = measure(3) do
+    queue = Queue.new
+    bands.times { |s| queue << s }
+    threads.times.map do
+      Thread.new do
+        while (s = begin
+          queue.pop(true)
+        rescue StandardError
+          nil
+        end)
+          window = sliced.view(s * band_rows * W, band_rows * W)
+          mandel.call(window, W, band_rows, s * band_rows, -2.5, -1.0, 3.5 / W, dy, LIMIT)
+        end
+      end
+    end.each(&:join)
+  end
+  row "mandelbrot #{threads} threads (dynamic bands)", sec
+  puts format('  scaling = %.2fx  identical = %s', native / sec, sliced.sum == checksum)
+end
 puts
 
 # ---------------------------------------------------------------- horner: 実行時特殊化

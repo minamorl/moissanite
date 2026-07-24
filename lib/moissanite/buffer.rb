@@ -55,6 +55,21 @@ module Moissanite
       to_a.sum
     end
 
+    # ゼロコピーの部分窓。親と同じメモリを指すので、複数スレッドが
+    # 互いに素な view へ同時に書くのは安全 (native レベルで別番地)。
+    # 親への参照を保持して GC から守る。
+    def view(offset, size)
+      unless offset.is_a?(Integer) && size.is_a?(Integer) && offset >= 0 && size.positive? && offset + size <= @size
+        raise ArgumentError, "view(#{offset}, #{size}) out of bounds for size #{@size}"
+      end
+
+      window = self.class.allocate
+      window.instance_variable_set(:@size, size)
+      window.instance_variable_set(:@ptr, Fiddle::Pointer.new(@ptr.to_i + (offset * ELEM), size * ELEM))
+      window.instance_variable_set(:@base, self)
+      window
+    end
+
     private
 
     def bound!(index)

@@ -129,6 +129,31 @@ class OracleTest < Minitest::Test
     assert_raises(ArgumentError) { ki.interpret(2**63) }
   end
 
+  def test_math_domain_follows_c_not_ruby
+    sqrt = scalar(->(_k, x) { x.sqrt }, x: :f64)
+
+    assert_predicate sqrt.interpret(-1.0), :nan? # Math::DomainError ではなく C の NaN
+    assert_in_delta 3.0, sqrt.interpret(9.0)
+
+    log = scalar(->(_k, x) { x.log }, x: :f64)
+
+    assert_predicate log.interpret(-1.0), :nan?
+    assert_equal(-Float::INFINITY, log.interpret(0.0))
+  end
+
+  def test_math_min_max_avoid_nan_like_fmin
+    min = scalar(->(_k, x, y) { x.min(y) }, x: :f64, y: :f64)
+
+    assert_in_delta 2.0, min.interpret(Float::NAN, 2.0)
+    assert_in_delta 1.0, min.interpret(1.0, Float::NAN)
+    assert_in_delta 1.0, min.interpret(2.0, 1.0)
+
+    max = scalar(->(_k, x, y) { x.max(y) }, x: :f64, y: :f64)
+
+    assert_in_delta 2.0, max.interpret(2.0, Float::NAN)
+    assert_in_delta 2.0, max.interpret(1.0, 2.0)
+  end
+
   def test_buffer_roundtrip
     buf = Moissanite::Buffer.f64(4)
     buf.fill(0.5)
