@@ -229,6 +229,20 @@ puts format('  融合の利得 = %.2fx  identical = %s  total=%.6f',
             sum_kernel.call(fuse_xs, FUSE_N))
 puts
 
+# ---------------------------------------------------------------- 融合 x 並列
+# call_parallel は extent guard が証明した性質 (i 番目の出力は i 番目の入力に
+# しか依存しない) をそのまま分割条件に使う。安全性の解析と並列性の解析が
+# 同一なので、要素ごと kernel は書いた瞬間から並列実行できる。
+par_out = Moissanite::Buffer.f64(FUSE_N)
+[2, 4].each do |threads|
+  next if threads > Etc.nprocessors
+
+  sec = measure(5) { fused_kernel.call_parallel(par_out, fuse_xs, FUSE_N, threads: threads) }
+  row "pipeline 融合 x #{threads} threads (call_parallel)", sec, FUSE_N
+  puts format('  scaling = %.2fx  identical = %s', fused_sec / sec, par_out.to_a == fused_out.to_a)
+end
+puts
+
 # ---------------------------------------------------------------- 特殊化レイテンシ (冷キャッシュ)
 # 「実行時にカーネルを組んで定数を畳み込む」往復の値段。生成物は
 # コンテンツアドレスされるので、これはユニークな式木の初回だけの費用。

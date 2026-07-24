@@ -24,6 +24,7 @@ a differential battery pins the native backends bit-for-bit to the oracle.
 | horner deg-8, runtime coefficients               | **1.85 ns/el** (specialized)  | 3.51 ns/el (generic)   |
 | 4-stage pipeline **composed at runtime**         | **1.8 ns/el** (fused, 1 pass) | 7.6 ns/el (dyn-chain)  |
 | the same pipeline hardcoded at compile time      | —                             | 1.5 ns/el (hand-fused) |
+| the same pipeline on 4 threads (`call_parallel`) | **0.80 ns/el**                | (needs rayon)          |
 | 4-stage **map-reduce** composed at runtime       | **1.9 ns/el** (no buffer)     | 9.0 ns/el (dyn-chain)  |
 | the same map-reduce as a compile-time iterator   | —                             | 2.2 ns/el (zero-cost)  |
 | any of these on the pure-Ruby oracle             | ~90× slower                   | —                      |
@@ -213,7 +214,28 @@ Two implementation notes worth knowing, both found by reading the generated asse
 `Fiddle::Function` releases the GVL while the native code runs, so kernels scale across cores
 with ordinary Ruby threads — no Ractors, no C threading, no unsafe. `Buffer#view(offset, size)`
 gives zero-copy disjoint windows of one buffer, which makes concurrent writes safe by
-construction (different threads touch different addresses):
+construction (different threads touch different addresses).
+
+For any kernel the extent guard recognizes, that split is already proven correct, so
+`call_parallel` does it for you — same buffers, same result, bit-identical:
+
+```ruby
+kernel.call_parallel(out, xs, n, threads: 4)   # => per-band return values
+```
+
+**The safety analysis and the parallelism analysis are the same analysis.** "Every buffer index is
+exactly the loop variable" is what makes `n ≤ size` sufficient for safety _and_ what makes index
+ranges independent for parallelism — both are reading off the same property: element `i` of the
+output depends only on element `i` of the input. So a kernel is parallel-ready the moment it is
+provably in-bounds; nothing extra is declared. Kernels the guard cannot prove (nested loops,
+strided indices) raise `BuildError` instead of racing.
+
+Reductions come back as an array of per-band partials. Combining them is the caller's call — and
+their sum is _not_ bit-identical to the serial run, because floating-point addition is not
+associative and the association order changed.
+
+To split by hand — for kernels the guard does not cover, like the 2-D mandelbrot grid — the same
+two rules apply:
 
 ```ruby
 queue = Queue.new

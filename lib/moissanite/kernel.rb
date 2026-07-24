@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'etc'
+
 module Moissanite
   # ==================================================================
   # Kernel — 名前付きの native レベル関数。実体は「型付きシグネチャ + 文の
@@ -54,6 +56,23 @@ module Moissanite
 
     def interpret(*)
       Oracle.new(self).call(*)
+    end
+
+    # 添字範囲を分割して素の Thread で並列実行する (実行器は BandRun)。
+    # 分割してよい根拠は extent_guard が証明した性質そのもの。
+    #
+    # 戻り値は各バンドの戻り値の配列。map 形では 0 の列なので捨ててよい。
+    # reduce 形では部分結果が返るが、**その合成は結合順が変わるので逐次
+    # 実行とビット一致しない** — 受け入れるかは呼び手が決めること。
+    def call_parallel(*args, threads: nil, band_size: nil)
+      guard = extent_guard
+      raise BuildError, "#{@name}: call_parallel needs a simple elementwise shape" unless guard
+
+      total = Arguments.validate(self, args, native: false)[guard.count_index]
+      return [] unless total.positive?
+
+      plan = BandRun::Plan.new(total: total, threads: threads, band_size: band_size)
+      BandRun.call(self, guard, args, plan)
     end
 
     def backend_name

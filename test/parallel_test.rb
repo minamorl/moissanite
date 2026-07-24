@@ -78,6 +78,80 @@ class ParallelTest < Minitest::Test
     assert_raises(ArgumentError) { base.view(-1, 1) }
   end
 
+  # --- call_parallel: extent guard と同じ条件で分割する ----------------
+
+  def elementwise_pipeline
+    Moissanite::Pipeline.f64.map { |v| (v * 2.0) + 1.0 }.map { |v| v.abs.sqrt }
+  end
+
+  def skewed_input(size)
+    Moissanite::Buffer.f64(Array.new(size) { |i| (((i * 37) % 1009) / 11.0) - 45.0 })
+  end
+
+  def test_call_parallel_is_bit_identical_to_serial
+    size = 50_000
+    xs = skewed_input(size)
+    kernel = elementwise_pipeline.fuse(:par_map)
+    serial = Moissanite::Buffer.f64(size)
+    parallel = Moissanite::Buffer.f64(size)
+    kernel.call(serial, xs, size)
+    kernel.call_parallel(parallel, xs, size, threads: 4)
+
+    assert_equal serial.to_a, parallel.to_a
+  end
+
+  def test_call_parallel_covers_uneven_band_boundaries
+    size = 1001 # ワーカ数でもバンド幅でも割り切れない
+    xs = skewed_input(size)
+    kernel = elementwise_pipeline.fuse(:uneven)
+    serial = Moissanite::Buffer.f64(size)
+    parallel = Moissanite::Buffer.f64(size)
+    kernel.call(serial, xs, size)
+    kernel.call_parallel(parallel, xs, size, threads: 3, band_size: 64)
+
+    assert_equal serial.to_a, parallel.to_a
+  end
+
+  def test_call_parallel_returns_partials_for_reductions
+    size = 10_000
+    xs = skewed_input(size)
+    kernel = elementwise_pipeline.sum(:par_sum)
+    partials = kernel.call_parallel(xs, size, threads: 4)
+
+    assert_operator partials.size, :>, 1
+    # 部分和の合成は結合順が変わるので、ビット一致ではなく近さで見る。
+    assert_in_delta kernel.call(xs, size), partials.sum, 1e-6
+  end
+
+  def test_call_parallel_handles_degenerate_counts
+    xs = Moissanite::Buffer.f64([1.0, 2.0])
+    out = Moissanite::Buffer.f64(2)
+    kernel = elementwise_pipeline.fuse(:degenerate)
+
+    assert_empty kernel.call_parallel(out, xs, 0, threads: 4)
+    kernel.call_parallel(out, xs, 1, threads: 8) # ワーカ数 > 要素数
+
+    assert_in_delta Math.sqrt(3.0), out.to_a.first
+  end
+
+  def test_call_parallel_rejects_shapes_it_cannot_prove_safe
+    grid = Moissanite.kernel(:grid2, out: :f64_buf, w: :i64, h: :i64) do |k, out, w, h|
+      k.count(h) do |y|
+        k.count(w) { |x| k.store(out, (y * w) + x, 1.0) }
+      end
+      k.ret 0
+    end
+
+    assert_raises(Moissanite::BuildError) { grid.call_parallel(Moissanite::Buffer.f64(4), 2, 2) }
+  end
+
+  def test_call_parallel_still_enforces_the_extent_guard
+    xs = Moissanite::Buffer.f64([1.0, 2.0])
+    out = Moissanite::Buffer.f64(2)
+
+    assert_raises(ArgumentError) { elementwise_pipeline.fuse(:guarded).call_parallel(out, xs, 5) }
+  end
+
   def test_native_calls_release_the_gvl
     skip 'needs >= 2 cores' if Etc.nprocessors < 2
 
