@@ -114,12 +114,19 @@ out.to_a
 Selection is a fallback chain — **it works everywhere, and is fast where it can be**:
 
 1. `cc` — emits C from the tree, compiles `-O3 -fwrapv -ffp-contract=off` with the system
-   compiler, `dlopen`s the result, calls it through `Fiddle::Function`. Artifacts are
-   content-addressed by SHA-256 of the source: the same tree never compiles twice.
-2. `oracle` — always available.
+   compiler, `dlopen`s the result, calls it through `Fiddle::Function`. Best code; ~70 ms cold
+   compile round-trip.
+2. `tcc` — the same emitted C through TinyCC when installed: **~11 ms compile+dlopen** (6× faster
+   round-trip) at ~1.7× slower runtime. Force it with `MOISSANITE_BACKEND=tcc` when
+   specialization latency beats peak speed — e.g. weaving a kernel per request.
+3. `oracle` — always available.
 
-Environment knobs: `MOISSANITE_BACKEND=oracle|cc` (force), `MOISSANITE_CC` (compiler),
-`MOISSANITE_CACHE_DIR` (artifact cache).
+Artifacts are content-addressed by SHA-256 of source + toolchain: the same tree never compiles
+twice per toolchain. The differential battery verifies every available toolchain against the
+oracle, so `cc` and `tcc` are held to identical semantics.
+
+Environment knobs: `MOISSANITE_BACKEND=oracle|cc|tcc` (force), `MOISSANITE_CC` / `MOISSANITE_TCC`
+(compilers), `MOISSANITE_CACHE_DIR` (artifact cache).
 
 ## Parallelism
 
@@ -157,8 +164,8 @@ Two rules make parallel decomposition exact:
    `source_c`).
 2. **The oracle is the semantics.** A backend is correct iff it is indistinguishable from the
    oracle; the differential battery is the judge.
-3. **No compiler is written here.** Backends drive existing engines (system cc today; libgccjit /
-   libtcc in-process next) through FFI and the toolchain.
+3. **No compiler is written here.** Backends drive existing engines (system cc and tcc today;
+   in-process libgccjit next) through FFI and the toolchain.
 4. **Always runnable.** The chain terminates at the oracle; a missing toolchain degrades speed,
    never behavior.
 5. **Runtime knowledge is fuel.** Building kernels at runtime turns runtime constants into folded
@@ -166,8 +173,7 @@ Two rules make parallel decomposition exact:
 
 ## Roadmap
 
-- **libgccjit backend** — same GCC optimizer, in-process through FFI, no subprocess or temp files
-- **libtcc backend** — instant in-process compilation for low-latency specialization
+- **libgccjit / libtcc in-process backends** — same engines without subprocess or temp files
 - `i64`/`f32` buffers, optional bounds-checked native mode, kernel fusion along composition edges
 - berylx bridge: kernels as workflow task leaves (effect tree stays the linker)
 

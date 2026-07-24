@@ -170,6 +170,29 @@ end
 puts '  (小さい n の ns/elem 上昇分が FFI 境界の固定費)'
 puts
 
+# ---------------------------------------------------------------- 特殊化レイテンシ (冷キャッシュ)
+# 「実行時にカーネルを組んで定数を畳み込む」往復の値段。生成物は
+# コンテンツアドレスされるので、これはユニークな式木の初回だけの費用。
+stamp = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+[Moissanite::Backend::Cc, Moissanite::Backend::Tcc].select(&:available?).each do |backend|
+  fresh = Moissanite.kernel(:"latency_#{backend.tag}", x: :f64) do |k, x|
+    k.ret((x * stamp) + backend.tag.to_s.length) # stamp でソースをユニーク化 (キャッシュ回避)
+  end
+  t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  backend.compile(fresh)
+  row "compile+dlopen 往復 (#{backend.tag})", Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+end
+puts
+
+# tcc 生成コードの実行速度 (fast-compile / slow-code のトレードオフの実測)
+if Moissanite::Backend::Tcc.available?
+  mandel_tcc = Moissanite::Backend::Tcc.compile(mandel)
+  sec = measure(3) { mandel_tcc.call(*args) }
+  row 'mandelbrot [tcc runtime]', sec
+  puts format('  tcc/gcc runtime = %.2fx slower', sec / native)
+  puts
+end
+
 # ---------------------------------------------------------------- Rust 対抗を同じ係数で起動
 rust_bin = File.expand_path('rust_baseline/target/release/moissanite_rust_baseline', __dir__)
 if File.executable?(rust_bin)

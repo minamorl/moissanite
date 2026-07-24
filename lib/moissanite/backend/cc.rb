@@ -22,61 +22,50 @@ module Moissanite
     #   -fwrapv          — i64 の符号つきオーバーフローを wrap と定義
     #   -ffp-contract=off — FMA 縮約を禁止し f64 を Ruby Float とビット一致に
     # ================================================================
-    module Cc
-      C_TYPE = { f64: 'double', i64: 'int64_t', f64_buf: 'double*' }.freeze
-      FIDDLE_TYPE = { f64: Fiddle::TYPE_DOUBLE, i64: Fiddle::TYPE_LONG_LONG, f64_buf: Fiddle::TYPE_VOIDP }.freeze
-      CFLAGS = %w[-O3 -fPIC -shared -fwrapv -ffp-contract=off].freeze
-      SYMBOL = 'moissanite_kernel'
+    Compiled = Struct.new(:kernel, :fn, :handle, :tag) do
+      def call(*args) = fn.call(*Arguments.validate(kernel, args, native: true))
+      def backend_name = tag
+    end
 
-      Compiled = Struct.new(:kernel, :fn, :handle) do
-        def call(*args) = fn.call(*Arguments.validate(kernel, args, native: true))
-        def backend_name = :cc
-      end
-
-      module_function
-
+    # ----------------------------------------------------------------
+    # Toolchain — 共有パイプライン: 発行 C → 外部コンパイラ → dlopen →
+    # Fiddle::Function。Cc / Tcc が extend し、command / tag だけを
+    # 差し替える。生成物は source の SHA-256 + tag でコンテンツアドレス
+    # され、同じ式木は (toolchain ごとに) 二度とコンパイルされない。
+    # ----------------------------------------------------------------
+    module Toolchain
       def available?
-        return @available unless @available.nil?
-
-        @available = probe
+        @available = probe if @available.nil?
+        @available
       end
 
       def compile(kernel)
-        emitter = new(kernel)
-        so_path = ensure_compiled(emitter.source)
+        so_path = ensure_compiled(Cc::Emitter.new(kernel).source)
         handle = Fiddle.dlopen(so_path)
         fn = Fiddle::Function.new(
-          handle[SYMBOL],
-          kernel.param_types.map { |t| FIDDLE_TYPE.fetch(t) },
-          FIDDLE_TYPE.fetch(kernel.return_type)
+          handle[Cc::SYMBOL],
+          kernel.param_types.map { |t| Cc::FIDDLE_TYPE.fetch(t) },
+          Cc::FIDDLE_TYPE.fetch(kernel.return_type)
         )
-        Compiled.new(kernel, fn, handle)
-      end
-
-      def new(kernel)
-        Emitter.new(kernel)
+        Compiled.new(kernel, fn, handle, tag)
       end
 
       def ensure_compiled(source)
         dir = cache_dir
         digest = Digest::SHA256.hexdigest(source)
-        so_path = File.join(dir, "#{digest}.so")
+        so_path = File.join(dir, "#{digest}-#{tag}.so")
         return so_path if File.exist?(so_path)
 
         c_path = File.join(dir, "#{digest}.c")
         File.write(c_path, source)
-        run_cc(c_path, so_path)
+        run_compiler(c_path, so_path)
         so_path
       end
 
-      def run_cc(c_path, so_path)
-        cmd = [compiler, *CFLAGS, '-o', so_path, c_path, '-lm']
+      def run_compiler(c_path, so_path)
+        cmd = command(c_path, so_path)
         _out, err, status = Open3.capture3(*cmd)
         raise CompileError, "#{cmd.join(' ')}\n#{err}" unless status.success? && File.exist?(so_path)
-      end
-
-      def compiler
-        ENV['MOISSANITE_CC'] || ENV['CC'] || RbConfig::CONFIG['CC'] || 'cc'
       end
 
       def cache_dir
@@ -86,11 +75,33 @@ module Moissanite
       end
 
       def probe
-        src = "int #{SYMBOL}(void) { return 0; }\n"
-        ensure_compiled(src)
+        ensure_compiled("int #{Cc::SYMBOL}(void) { return 0; }\n")
         true
       rescue StandardError
         false
+      end
+    end
+
+    module Cc
+      C_TYPE = { f64: 'double', i64: 'int64_t', f64_buf: 'double*' }.freeze
+      FIDDLE_TYPE = { f64: Fiddle::TYPE_DOUBLE, i64: Fiddle::TYPE_LONG_LONG, f64_buf: Fiddle::TYPE_VOIDP }.freeze
+      CFLAGS = %w[-O3 -fPIC -shared -fwrapv -ffp-contract=off].freeze
+      SYMBOL = 'moissanite_kernel'
+
+      extend Toolchain
+
+      def self.tag = :cc
+
+      def self.command(c_path, so_path)
+        [compiler, *CFLAGS, '-o', so_path, c_path, '-lm']
+      end
+
+      def self.compiler
+        ENV['MOISSANITE_CC'] || ENV['CC'] || RbConfig::CONFIG['CC'] || 'cc'
+      end
+
+      def self.new(kernel)
+        Emitter.new(kernel)
       end
 
       # ----------------------------------------------------------------
@@ -195,6 +206,28 @@ module Moissanite
           else format('%<v>a', v: value)
           end
         end
+      end
+    end
+
+    # ----------------------------------------------------------------
+    # Tcc backend — 同じ発行 C を tcc で瞬間コンパイルする (~10ms、gcc の
+    # 20-30 倍速いコンパイル)。生成コードの速度は gcc -O3 に劣るので、
+    # 既定 chain では cc の後ろに置く。「リクエスト毎の実行時特殊化」の
+    # ように往復レイテンシが利くときに MOISSANITE_BACKEND=tcc で選ぶ。
+    # tcc は UB を突く最適化をしないため wrap / contract の旗は不要
+    # (意味論の一致は cc と同じ差分検証バッテリーが縛る)。
+    # ----------------------------------------------------------------
+    module Tcc
+      extend Toolchain
+
+      def self.tag = :tcc
+
+      def self.command(c_path, so_path)
+        [compiler, '-shared', '-o', so_path, c_path, '-lm']
+      end
+
+      def self.compiler
+        ENV['MOISSANITE_TCC'] || 'tcc'
       end
     end
   end

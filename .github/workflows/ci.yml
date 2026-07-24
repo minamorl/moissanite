@@ -31,7 +31,12 @@ jobs:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
 
-      # ubuntu runner には cc がいるので差分検証 (oracle vs cc) まで走る。
+      # tcc も入れて、差分検証バッテリーが cc / tcc の両 toolchain を
+      # oracle に対して検証できるようにする。
+      - name: Install tcc (fast-compile backend)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tcc
+
+      # ubuntu runner には cc がいるので差分検証 (oracle vs cc/tcc) まで走る。
       - name: Run tests (auto backend)
         run: bundle exec rake test
 

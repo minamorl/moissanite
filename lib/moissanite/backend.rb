@@ -26,12 +26,17 @@ module Moissanite
     def chain
       case ENV.fetch('MOISSANITE_BACKEND', nil)
       when 'oracle' then [OracleBackend]
-      when 'cc' then [Cc.tap do |b|
-        b.available? || raise(Unavailable, 'MOISSANITE_BACKEND=cc but no working C toolchain')
-      end]
-      when nil then [Cc, OracleBackend]
+      when 'cc' then [require_available(Cc)]
+      when 'tcc' then [require_available(Tcc)]
+      when nil then [Cc, Tcc, OracleBackend]
       else raise ArgumentError, "unknown MOISSANITE_BACKEND=#{ENV.fetch('MOISSANITE_BACKEND', nil)}"
       end
+    end
+
+    def require_available(backend)
+      return backend if backend.available?
+
+      raise Unavailable, "MOISSANITE_BACKEND=#{backend.tag} but that toolchain is not working here"
     end
 
     # oracle を backend の口に合わせる薄い皮。Oracle は呼び出しごとに

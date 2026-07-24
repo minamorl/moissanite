@@ -10,7 +10,12 @@ require 'moissanite'
 # シード固定のランダム式バッテリーの両方で oracle vs cc を突き合わせる。
 class EquivalenceTest < Minitest::Test
   def setup
-    skip 'no working C toolchain: cc backend untestable' unless Moissanite::Backend::Cc.available?
+    skip 'no working native toolchain: backends untestable' if native_backends.empty?
+  end
+
+  # 使える toolchain backend 全部 (cc / tcc) を oracle に対して検証する。
+  def native_backends
+    [Moissanite::Backend::Cc, Moissanite::Backend::Tcc].select(&:available?)
   end
 
   # f64 は NaN 同士を除きビット一致を要求する。
@@ -23,10 +28,13 @@ class EquivalenceTest < Minitest::Test
   end
 
   def assert_kernel_equivalent(kernel, arg_tuples)
-    compiled = Moissanite::Backend::Cc.compile(kernel)
+    native_backends.each do |backend|
+      compiled = backend.compile(kernel)
 
-    arg_tuples.each do |args|
-      assert_same_value kernel.interpret(*args), compiled.call(*args), "#{kernel.name}(#{args.inspect})"
+      arg_tuples.each do |args|
+        assert_same_value kernel.interpret(*args), compiled.call(*args),
+                          "#{backend.tag}: #{kernel.name}(#{args.inspect})"
+      end
     end
   end
 
@@ -73,11 +81,13 @@ class EquivalenceTest < Minitest::Test
 
     xs = Moissanite::Buffer.f64([1.0, 2.0, 4.0, 8.0])
     out_oracle = Moissanite::Buffer.f64(4)
-    out_native = Moissanite::Buffer.f64(4)
     kernel.interpret(out_oracle, xs, 4)
-    Moissanite::Backend::Cc.compile(kernel).call(out_native, xs, 4)
+    native_backends.each do |backend|
+      out_native = Moissanite::Buffer.f64(4)
+      backend.compile(kernel).call(out_native, xs, 4)
 
-    assert_equal out_oracle.to_a, out_native.to_a
+      assert_equal out_oracle.to_a, out_native.to_a, backend.tag.to_s
+    end
   end
 
   def test_control_flow_mix
@@ -111,11 +121,13 @@ class EquivalenceTest < Minitest::Test
 
     xs = Moissanite::Buffer.f64([-2.0, -0.5, 0.0, 0.3, 1.7])
     a = Moissanite::Buffer.f64(5)
-    b = Moissanite::Buffer.f64(5)
     kernel.interpret(a, xs, 5)
-    Moissanite::Backend::Cc.compile(kernel).call(b, xs, 5)
+    native_backends.each do |backend|
+      b = Moissanite::Buffer.f64(5)
+      backend.compile(kernel).call(b, xs, 5)
 
-    assert_equal a.to_a, b.to_a
+      assert_equal a.to_a, b.to_a, backend.tag.to_s
+    end
   end
 
   def test_math_functions_match_libm
