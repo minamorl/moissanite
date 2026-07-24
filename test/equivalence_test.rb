@@ -197,7 +197,7 @@ class EquivalenceTest < Minitest::Test
                                                          :f64) : [@a, @b].sample(random: @rng)
       end
 
-      case @rng.rand(9)
+      case @rng.rand(10)
       when 0 then f64(depth - 1) + f64(depth - 1)
       when 1 then f64(depth - 1) - f64(depth - 1)
       when 2 then f64(depth - 1) * f64(depth - 1)
@@ -207,6 +207,7 @@ class EquivalenceTest < Minitest::Test
       when 6 then f64(depth - 1).abs.sqrt
       when 7 then f64(depth - 1).sin
       when 8 then f64(depth - 1).min(f64(depth - 1))
+      when 9 then -f64(depth - 1)
       end
     end
 
@@ -216,12 +217,13 @@ class EquivalenceTest < Minitest::Test
                                                          :i64) : [@m, @n].sample(random: @rng)
       end
 
-      case @rng.rand(5)
+      case @rng.rand(6)
       when 0 then i64(depth - 1) + i64(depth - 1)
       when 1 then i64(depth - 1) - i64(depth - 1)
       when 2 then i64(depth - 1) * i64(depth - 1)
       when 3 then i64(depth - 1) / Moissanite::Expr.lift(@rng.rand(1..9), :i64)
       when 4 then Moissanite::Expr.select(bool(depth - 1), i64(depth - 1), i64(depth - 1))
+      when 5 then -i64(depth - 1)
       end
     end
 

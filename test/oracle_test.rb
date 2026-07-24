@@ -129,6 +129,23 @@ class OracleTest < Minitest::Test
     assert_raises(ArgumentError) { ki.interpret(2**63) }
   end
 
+  # 単項マイナスは 0 - x では代用できない: f64 の -0.0 が +0.0 になってしまう。
+  def test_unary_minus_preserves_negative_zero
+    negate = scalar(->(_k, x) { -x }, x: :f64)
+    subtract = scalar(->(_k, x) { 0.0 - x }, x: :f64)
+
+    assert_equal(-Float::INFINITY, 1.0 / negate.interpret(0.0))
+    assert_equal(Float::INFINITY, 1.0 / subtract.interpret(0.0))
+    assert_in_delta(-2.5, negate.interpret(2.5))
+  end
+
+  def test_unary_minus_wraps_at_i64_min
+    negate = scalar(->(_k, n) { -n }, n: :i64)
+
+    assert_equal I64_MIN, negate.interpret(I64_MIN)
+    assert_equal(-5, negate.interpret(5))
+  end
+
   def test_math_domain_follows_c_not_ruby
     sqrt = scalar(->(_k, x) { x.sqrt }, x: :f64)
 

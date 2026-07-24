@@ -17,6 +17,7 @@ Metrics/AbcSize:
   Exclude:
     - test/**/*
     - bench/**/*
+    - examples/**/*
     # インタプリタ / エミッタ / 解析の中心 case 表 (下の MethodLength と同じ理由)。
     - lib/moissanite/oracle.rb
     - lib/moissanite/backend/cc.rb
@@ -27,6 +28,7 @@ Metrics/MethodLength:
   Exclude:
     - test/**/*
     - bench/**/*
+    - examples/**/*
     # インタプリタ / エミッタ / 解析の中心は「ノード種別 → 意味」の対応表 (case)。
     # 分割すると対応表としての一覧性 (= 意味論の読みやすさ) が壊れるので、
     # これらのファイルだけ表の長さを許す。
@@ -40,6 +42,7 @@ Metrics/CyclomaticComplexity:
     - lib/moissanite/backend/cc.rb
     - lib/moissanite/extent_guard.rb
     - bench/**/*
+    - examples/**/*
     - test/equivalence_test.rb
 
 # kernel の DSL ブロックはシグネチャがそのまま並ぶ (out, xs, n, ...)。
@@ -47,12 +50,14 @@ Metrics/CyclomaticComplexity:
 Metrics/ParameterLists:
   Exclude:
     - bench/**/*
+    - examples/**/*
     - test/**/*
 
 Metrics/BlockLength:
   Exclude:
     - test/**/*
     - bench/**/*
+    - examples/**/*
     - "*.gemspec"
 
 Metrics/ClassLength:
@@ -101,6 +106,7 @@ Naming/MethodParameterName:
 Style/FormatStringToken:
   Exclude:
     - bench/**/*
+    - examples/**/*
 
 Minitest/MultipleAssertions:
   Exclude:

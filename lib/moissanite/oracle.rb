@@ -84,6 +84,7 @@ module Moissanite
       when Local then @env.fetch(expr.id)
       when BinOp then eval_binop(expr)
       when Not then !eval_expr(expr.expr)
+      when Neg then negate(expr)
       when Cast then eval_cast(expr)
       when Select then eval_expr(expr.cond) ? eval_expr(expr.then_e) : eval_expr(expr.else_e)
       when Load then @args[expr.buf.index][eval_expr(expr.index)]
@@ -107,6 +108,11 @@ module Moissanite
       when :max then math_minmax(values[0], values[1]) { |a, b| [a, b].max }
       else raise Error, "unknown math fn #{expr.fn}"
       end
+    end
+
+    # i64 の単項マイナスは wrap する (-I64_MIN は表現できない)。
+    def negate(expr)
+      arith(expr.type, -eval_expr(expr.expr))
     end
 
     def math_minmax(first, second)

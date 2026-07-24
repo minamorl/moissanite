@@ -57,6 +57,12 @@ module Moissanite
       Expr.bool_not(self)
     end
 
+    # 単項マイナス。0 - x では代用できない: f64 では -(0.0) は -0.0 だが
+    # 0.0 - 0.0 は +0.0 になる。専用ノードで C の -x にそのまま写す。
+    def -@
+      Expr.negate(self)
+    end
+
     def to_f64
       Expr.cast(:f64, self)
     end
@@ -129,6 +135,12 @@ module Moissanite
     def to_sexp = [:not, expr.to_sexp]
   end
 
+  Neg = Data.define(:type, :expr) do
+    include Ops
+
+    def to_sexp = [:neg, expr.to_sexp]
+  end
+
   Cast = Data.define(:type, :expr) do
     include Ops
 
@@ -198,9 +210,16 @@ module Moissanite
 
     def node?(value)
       case value
-      when Const, Param, Local, BinOp, Not, Cast, Select, Load, MathOp then true
+      when Const, Param, Local, BinOp, Not, Neg, Cast, Select, Load, MathOp then true
       else false
       end
+    end
+
+    def negate(operand)
+      expr = lift_any(operand)
+      raise TypeMismatch, "cannot negate #{expr.type}" unless %i[f64 i64].include?(expr.type)
+
+      Neg.new(type: expr.type, expr: expr)
     end
 
     # 単項 libm (f64 のみ)。

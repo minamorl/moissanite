@@ -46,6 +46,11 @@ jobs:
         env:
           MOISSANITE_BACKEND: oracle
 
+      # examples は自分で不変条件を検査する (融合と段別のビット一致など)
+      # ので、走らせること自体がテストになる。腐らせない。
+      - name: Run examples
+        run: bundle exec rake examples
+
       - name: Run RuboCop
         run: bundle exec rubocop
 

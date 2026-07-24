@@ -296,9 +296,14 @@ Two rules make parallel decomposition exact:
 
 ```bash
 bundle install
-rake test    # unit + oracle semantics + differential battery (needs a C toolchain for the last)
-rake bench   # numbers above
+rake test      # unit + oracle semantics + differential battery (needs a C toolchain for the last)
+rake examples  # runnable examples; each asserts its own invariants
+rake bench     # numbers above
 ```
+
+`examples/` is the fastest way in: runtime specialization (`01`), a pipeline assembled from a
+config hash then fused and parallelized (`02`), and using the oracle as a correctness contract for
+kernels the extent guard cannot cover (`03`).
 
 ## License
 

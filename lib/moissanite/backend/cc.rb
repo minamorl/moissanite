@@ -207,6 +207,10 @@ module Moissanite
           when Local then name(node)
           when BinOp then "(#{expr(node.lhs)} #{BINOP_C.fetch(node.op)} #{expr(node.rhs)})"
           when Not then "(!#{expr(node.expr)})"
+          # 内側を必ず括る: 負の定数や入れ子の単項マイナスをそのまま
+          # 前置すると `--x` になり、C ではデクリメント演算子として
+          # 解釈されてコンパイルが落ちる (ランダム式バッテリーが検出した)。
+          when Neg then "(-(#{expr(node.expr)}))"
           when Cast then "((#{C_TYPE.fetch(node.type)})#{expr(node.expr)})"
           when Select then "(#{expr(node.cond)} ? #{expr(node.then_e)} : #{expr(node.else_e)})"
           when Load then "#{node.buf.name}[#{expr(node.index)}]"

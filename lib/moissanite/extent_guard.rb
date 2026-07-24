@@ -59,7 +59,7 @@ module Moissanite
       case expr
       when Load then [[expr.buf, expr.index], *in_expr(expr.index)]
       when BinOp then in_expr(expr.lhs) + in_expr(expr.rhs)
-      when Not, Cast then in_expr(expr.expr)
+      when Not, Neg, Cast then in_expr(expr.expr)
       when Select then in_expr(expr.cond) + in_expr(expr.then_e) + in_expr(expr.else_e)
       when MathOp then expr.args.flat_map { |arg| in_expr(arg) }
       else []
