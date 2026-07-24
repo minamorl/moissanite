@@ -83,8 +83,11 @@ module Moissanite
     end
 
     module Cc
-      C_TYPE = { f64: 'double', i64: 'int64_t', f64_buf: 'double*' }.freeze
-      FIDDLE_TYPE = { f64: Fiddle::TYPE_DOUBLE, i64: Fiddle::TYPE_LONG_LONG, f64_buf: Fiddle::TYPE_VOIDP }.freeze
+      C_TYPE = { f64: 'double', i64: 'int64_t', f64_buf: 'double*', i64_buf: 'int64_t*' }.freeze
+      FIDDLE_TYPE = {
+        f64: Fiddle::TYPE_DOUBLE, i64: Fiddle::TYPE_LONG_LONG,
+        f64_buf: Fiddle::TYPE_VOIDP, i64_buf: Fiddle::TYPE_VOIDP
+      }.freeze
       CFLAGS = %w[-O3 -fPIC -shared -fwrapv -ffp-contract=off].freeze
       SYMBOL = 'moissanite_kernel'
 

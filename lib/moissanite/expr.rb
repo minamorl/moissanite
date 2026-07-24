@@ -16,7 +16,9 @@ module Moissanite
   # :bool。バッファは :f64_buf (生メモリ上の double 列)。
   # ==================================================================
   SCALAR_TYPES = %i[f64 i64 bool].freeze
-  PARAM_TYPES = %i[f64 i64 f64_buf].freeze
+  PARAM_TYPES = %i[f64 i64 f64_buf i64_buf].freeze
+  # バッファ型 → 要素のスカラ型。バッファはこの表にあるものが全て。
+  BUFFER_ELEMENT = { f64_buf: :f64, i64_buf: :i64 }.freeze
 
   # 演算子オーバーロードの共有実装。全ノードが include する。
   module Ops
@@ -97,11 +99,13 @@ module Moissanite
   Param = Data.define(:type, :name, :index) do
     include Ops
 
-    # f64_buf パラメータの読み出し: buf[i] は Load 式 (純データ) になる。
+    # バッファパラメータの読み出し: buf[i] は Load 式 (純データ) になる。
+    # 型は要素型 (f64_buf なら :f64、i64_buf なら :i64)。
     def [](index)
-      raise TypeMismatch, "#{name} is not a buffer" unless type == :f64_buf
+      element = BUFFER_ELEMENT[type]
+      raise TypeMismatch, "#{name} is not a buffer" unless element
 
-      Load.new(type: :f64, buf: self, index: Expr.lift_to_i64(index))
+      Load.new(type: element, buf: self, index: Expr.lift_to_i64(index))
     end
 
     def to_sexp = [:param, type, name]

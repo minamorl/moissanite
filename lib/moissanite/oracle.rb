@@ -218,7 +218,7 @@ module Moissanite
       case param.type
       when :f64 then Float(arg)
       when :i64 then convert_i64(kernel, param, arg)
-      when :f64_buf then convert_buf(kernel, param, arg, native)
+      when :f64_buf, :i64_buf then convert_buf(kernel, param, arg, native)
       end
     end
 
@@ -235,6 +235,14 @@ module Moissanite
       unless arg.is_a?(Buffer)
         raise ArgumentError,
               "#{kernel.name}.#{param.name}: expected Moissanite::Buffer, got #{arg.class}"
+      end
+
+      # 要素型の取り違えは native では黙って読み替えになる (どちらも 8 バイト)
+      # ので、入口で必ず弾く。
+      expected = BUFFER_ELEMENT.fetch(param.type)
+      unless arg.element_type == expected
+        raise ArgumentError,
+              "#{kernel.name}.#{param.name}: expected a #{expected} buffer, got #{arg.element_type}"
       end
 
       native ? arg.ptr : arg

@@ -130,6 +130,31 @@ class EquivalenceTest < Minitest::Test
     end
   end
 
+  # 整数バッファ + 計算された添字 (extent guard の対象外の形) でも、
+  # oracle と native は一致しなければならない。
+  def test_histogram_with_i64_buffer_matches_oracle
+    kernel = Moissanite.kernel(:hist, bins: :i64_buf, xs: :f64_buf, n: :i64,
+                                      nbins: :i64, lo: :f64, width: :f64) do |k, bins, xs, n, nbins, lo, width|
+      k.count(n) do |i|
+        raw = k.let(((xs[i] - lo) / width).to_i64)
+        slot = k.let(k.select(raw < 0, 0, k.select(raw >= nbins, nbins - 1, raw)))
+        k.store(bins, slot, bins[slot] + 1)
+      end
+      k.ret 0
+    end
+
+    xs = Moissanite::Buffer.f64([0.0, 0.5, 1.5, 2.5, 9.9, -3.0, 100.0, 4.999])
+    oracle_bins = Moissanite::Buffer.i64(4).fill(0)
+    kernel.interpret(oracle_bins, xs, 8, 4, 0.0, 2.5)
+
+    native_backends.each do |backend|
+      bins = Moissanite::Buffer.i64(4).fill(0)
+      backend.compile(kernel).call(bins, xs, 8, 4, 0.0, 2.5)
+
+      assert_equal oracle_bins.to_a, bins.to_a, backend.tag.to_s
+    end
+  end
+
   def test_math_functions_match_libm
     kernel = Moissanite.kernel(:mathmix, x: :f64, y: :f64) do |k, x, y|
       a = k.let(x.abs.sqrt + y.sin + x.cos)

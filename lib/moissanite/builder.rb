@@ -37,10 +37,12 @@ module Moissanite
     end
 
     def store(buf, index, value)
-      raise TypeMismatch, 'store target must be a f64_buf param' unless buf.is_a?(Param) && buf.type == :f64_buf
+      element = BUFFER_ELEMENT[buf.type] if buf.is_a?(Param)
+      raise TypeMismatch, 'store target must be a buffer param' unless element
 
-      expr = Expr.lift_any(value)
-      raise TypeMismatch, "cannot store #{expr.type} into f64 buffer" unless expr.type == :f64
+      # リテラルはバッファの要素型へ持ち上げる (式なら型が一致していること)。
+      expr = Expr.node?(value) ? value : Expr.lift(value, element)
+      raise TypeMismatch, "cannot store #{expr.type} into #{buf.type}" unless expr.type == element
 
       emit Store.new(buf: buf, index: Expr.lift_to_i64(index), expr: expr)
     end
