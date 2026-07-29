@@ -56,6 +56,33 @@ class ForeignBufferTest < Minitest::Test
     assert_raises(ArgumentError) { Moissanite::Buffer.wrap(source.ptr, 'two', :f64) }
   end
 
+  # u8 は幅 1 なので整列の制約が無く、どの番地からでも採用できる。
+  # ネットワークバッファの途中を指すのはむしろ普通の使い方 (ヘッダを
+  # 読み飛ばした残り、など) なので、8 バイト境界を要求してはいけない。
+  def test_wrap_adopts_bytes_at_any_address
+    owner = Moissanite::Buffer.bytes('hello world')
+    foreign = Moissanite::Buffer.wrap(Fiddle::Pointer.new(owner.ptr.to_i + 1), 4, :u8, owner: owner)
+
+    assert_equal 'ello', foreign.to_bytes
+    assert_equal 'll', foreign.view(1, 2).to_bytes
+  end
+
+  # 採用したバイト列がそのまま native カーネルの入力になること
+  # (幅が正しく伝わっていないと oracle と native がずれる)。
+  def test_native_kernel_reads_through_a_wrapped_u8_buffer
+    kernel = Moissanite.kernel(:bytesum, buf: :u8_buf, n: :i64) do |k, buf, n|
+      acc = k.let(0)
+      k.count(n) { |i| k.assign(acc, acc + buf[i]) }
+      k.ret acc
+    end
+
+    owner = Moissanite::Buffer.bytes('hello world')
+    foreign = Moissanite::Buffer.wrap(Fiddle::Pointer.new(owner.ptr.to_i + 1), 4, :u8, owner: owner)
+
+    assert_equal 'ello'.bytes.sum, kernel.interpret(foreign, 4)
+    assert_equal kernel.interpret(foreign, 4), kernel.call(foreign, 4)
+  end
+
   def test_view_of_a_wrapped_buffer_stays_zero_copy
     source = Moissanite::Buffer.f64([1.0, 2.0, 3.0, 4.0])
     window = Moissanite::Buffer.wrap(source.ptr, 4, :f64, owner: source).view(2, 2)

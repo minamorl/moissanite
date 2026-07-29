@@ -46,6 +46,85 @@ class BufferTest < Minitest::Test
     assert_raises(ArgumentError) { Moissanite::Buffer.f64('four') }
   end
 
+  # --- u8 バッファ ------------------------------------------------------
+
+  def test_u8_buffer_roundtrip_and_width
+    buf = Moissanite::Buffer.u8([0, 127, 255])
+
+    assert_equal :u8, buf.element_type
+    assert_equal [0, 127, 255], buf.to_a
+    buf[1] = 42
+
+    assert_equal 42, buf[1]
+  end
+
+  # i64 の overflow が wrap する掟と同じ側へ倒す。native の書き込みは
+  # (uint8_t) キャストで切り詰めるので、ここで例外にすると oracle と
+  # native が食い違ってしまう。型違い (Float) は従来どおり弾く。
+  def test_u8_writes_truncate_to_the_low_byte
+    buf = Moissanite::Buffer.u8(3)
+    buf[0] = 256
+    buf[1] = -1
+    buf[2] = 0x1FF
+
+    assert_equal [0, 255, 255], buf.to_a
+    assert_raises(ArgumentError) { buf[0] = 1.5 }
+  end
+
+  def test_u8_buffer_carries_bytes_both_ways
+    request = "GET / HTTP/1.1\r\n"
+    buf = Moissanite::Buffer.bytes(request)
+
+    assert_equal request.bytesize, buf.size
+    assert_equal request, buf.to_bytes
+    assert_equal 'G'.ord, buf[0]
+  end
+
+  def test_to_bytes_is_only_for_u8_buffers
+    assert_raises(Moissanite::Error) { Moissanite::Buffer.i64([1]).to_bytes }
+  end
+
+  # view は要素幅ぶんだけポインタを進めなければならない (u8 は 1 バイト)。
+  def test_u8_view_is_a_byte_window
+    window = Moissanite::Buffer.bytes('abcdef').view(2, 3)
+
+    assert_equal :u8, window.element_type
+    assert_equal 'cde', window.to_bytes
+  end
+
+  # 幅が違うので取り違えは f64/i64 の混同より危険 (8 倍読む)。入口で弾く。
+  def test_u8_buffers_do_not_satisfy_wider_buffer_params
+    kernel = counting_kernel
+    error = assert_raises(ArgumentError) do
+      kernel.call(Moissanite::Buffer.u8(1), Moissanite::Buffer.f64([0.5]), 1, 1.0)
+    end
+
+    assert_match(/expected a i64 buffer/, error.message)
+  end
+
+  def test_u8_loads_are_i64_typed_so_no_new_scalar_type_appears
+    Moissanite.kernel(:typed, bytes: :u8_buf, reals: :f64_buf, n: :i64) do |k, bytes, reals, n|
+      assert_equal :i64, bytes[0].type
+      assert_raises(Moissanite::TypeMismatch) { bytes[0] + reals[0] }
+      k.count(n) { |i| k.store(bytes, i, bytes[i] + 1) }
+      k.ret 0
+    end
+  end
+
+  # 幅が 1 バイトなので、添字が溢れたときの native の被害は f64/i64 より
+  # 大きい。extent guard が u8 でも成立していることを縛る。
+  def test_extent_guard_covers_u8_buffers_too
+    kernel = Moissanite.kernel(:bump, out: :u8_buf, src: :u8_buf, n: :i64) do |k, out, src, n|
+      k.count(n) { |i| k.store(out, i, src[i] + 1) }
+      k.ret 0
+    end
+
+    refute_nil kernel.extent_guard
+    assert_raises(ArgumentError) do
+      kernel.call(Moissanite::Buffer.u8(3), Moissanite::Buffer.u8([1, 2, 3]), 4_000_000)
+    end
+  end
+
   # --- kernel との接続 -------------------------------------------------
 
   def counting_kernel
