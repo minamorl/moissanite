@@ -108,10 +108,13 @@ module Moissanite
     end
 
     module Cc
-      C_TYPE = { f64: 'double', i64: 'int64_t', f64_buf: 'double*', i64_buf: 'int64_t*' }.freeze
+      C_TYPE = {
+        f64: 'double', i64: 'int64_t',
+        f64_buf: 'double*', i64_buf: 'int64_t*', u8_buf: 'uint8_t*'
+      }.freeze
       FIDDLE_TYPE = {
         f64: Fiddle::TYPE_DOUBLE, i64: Fiddle::TYPE_LONG_LONG,
-        f64_buf: Fiddle::TYPE_VOIDP, i64_buf: Fiddle::TYPE_VOIDP
+        f64_buf: Fiddle::TYPE_VOIDP, i64_buf: Fiddle::TYPE_VOIDP, u8_buf: Fiddle::TYPE_VOIDP
       }.freeze
       CFLAGS = %w[-O3 -fPIC -shared -fwrapv -ffp-contract=off].freeze
       SYMBOL = 'moissanite_kernel'
@@ -198,7 +201,7 @@ module Moissanite
           case node
           when Let then "#{pad}#{C_TYPE.fetch(node.local.type)} #{name(node.local)} = #{expr(node.expr)};\n"
           when Assign then "#{pad}#{name(node.local)} = #{expr(node.expr)};\n"
-          when Store then "#{pad}#{node.buf.name}[#{expr(node.index)}] = #{expr(node.expr)};\n"
+          when Store then "#{pad}#{node.buf.name}[#{expr(node.index)}] = #{cast_in(node, expr(node.expr))};\n"
           when If then if_stmt(node, depth, pad)
           when Count then count_stmt(node, depth, pad)
           when Break then "#{pad}break;\n"
@@ -206,6 +209,15 @@ module Moissanite
           else raise Error, "unknown statement #{node.inspect}"
           end
         end
+
+        # u8 バッファは出入りの両端でキャストを通す。他のバッファは素通し。
+        #
+        # 書き: 下位 8bit へ切り詰める (oracle の value & 0xFF と同じ意味論)。
+        # 読み: uint8_t は C の整数昇格で int になるので int64_t へ広げる。
+        #   広げないと buf[i]*buf[j]*... が int 演算になり、式言語が :i64 と
+        #   言っている型と食い違う (差分検証の u8 widening ケースが捕まえる)。
+        def cast_in(node, src) = node.buf.type == :u8_buf ? "((uint8_t)(#{src}))" : src
+        def cast_out(node, src) = node.buf.type == :u8_buf ? "((int64_t)#{src})" : src
 
         def if_stmt(node, depth, pad)
           out = "#{pad}if (#{expr(node.cond)}) {\n#{block(node.then_stmts, depth + 1)}#{pad}}"
@@ -238,7 +250,7 @@ module Moissanite
           when Neg then "(-(#{expr(node.expr)}))"
           when Cast then "((#{C_TYPE.fetch(node.type)})#{expr(node.expr)})"
           when Select then "(#{expr(node.cond)} ? #{expr(node.then_e)} : #{expr(node.else_e)})"
-          when Load then "#{node.buf.name}[#{expr(node.index)}]"
+          when Load then cast_out(node, "#{node.buf.name}[#{expr(node.index)}]")
           when MathOp then "#{MATH_C.fetch(node.fn)}(#{node.args.map { |a| expr(a) }.join(', ')})"
           else raise Error, "unknown expression #{node.inspect}"
           end

@@ -16,9 +16,17 @@ module Moissanite
   # :bool。バッファは :f64_buf (生メモリ上の double 列)。
   # ==================================================================
   SCALAR_TYPES = %i[f64 i64 bool].freeze
-  PARAM_TYPES = %i[f64 i64 f64_buf i64_buf].freeze
-  # バッファ型 → 要素のスカラ型。バッファはこの表にあるものが全て。
-  BUFFER_ELEMENT = { f64_buf: :f64, i64_buf: :i64 }.freeze
+  PARAM_TYPES = %i[f64 i64 f64_buf i64_buf u8_buf].freeze
+  # バッファ型 → 添字読み出しの式の型。バッファはこの表にあるものが全て。
+  #
+  # u8_buf の記憶域は 1 バイトだが、式言語にスカラ :u8 は足していない。
+  # 読み出しは 0..255 の :i64 として現れる。新しいスカラ型を足すと算術・
+  # 比較・昇格の規則が一式増えるのに、得るものが無いため: バイトは数えたり
+  # 比べたり添字にしたりするために読むので、値の型は i64 で足りる。
+  BUFFER_ELEMENT = { f64_buf: :f64, i64_buf: :i64, u8_buf: :i64 }.freeze
+  # バッファ型 → 実際に渡すべき Buffer の要素型 (記憶域の幅)。式の型
+  # (BUFFER_ELEMENT) とは別物で、u8_buf だけ両者が食い違う。
+  BUFFER_STORAGE = { f64_buf: :f64, i64_buf: :i64, u8_buf: :u8 }.freeze
 
   # 演算子オーバーロードの共有実装。全ノードが include する。
   module Ops

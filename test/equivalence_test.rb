@@ -90,6 +90,66 @@ class EquivalenceTest < Minitest::Test
     end
   end
 
+  # バイト列上の状態機械 — u8 バッファ本来の用途 (プロトコル解析)。
+  # native では uint8_t が C の整数昇格で int になるので、式言語が :i64 と
+  # 言っている型と食い違わないことをここで縛る。oracle の正しさ自体は
+  # Ruby の String#index を第三の証人にして確かめる。
+  def test_u8_scanner_matches_oracle
+    kernel = Moissanite.kernel(:find_crlf, buf: :u8_buf, n: :i64) do |k, buf, n|
+      found = k.let(-1)
+      k.count(n - 1) do |i|
+        k.if_(buf[i].eq(13) & buf[i + 1].eq(10)) do
+          k.assign(found, i)
+          k.break_if(true)
+        end
+      end
+      k.ret found
+    end
+
+    ["GET / HTTP/1.1\r\nHost: x\r\n\r\n", 'no line ending here', "\r\n", "a\rb\nc\r\n", 'x'].each do |request|
+      buf = Moissanite::Buffer.bytes(request)
+
+      assert_kernel_equivalent kernel, [[buf, buf.size]]
+      assert_equal(request.index("\r\n") || -1, kernel.interpret(buf, buf.size), request.inspect)
+    end
+  end
+
+  # u8 の読み出しは必ず int64_t へ広げてから使う。バイト 4 つの積は
+  # 255^4 = 4_228_250_625 で int を溢れるので、広げないと native は符号付き
+  # int の overflow (未定義動作) になり oracle と食い違う。式言語が :i64 と
+  # 言っている以上 64bit で計算されなければならない、という約束の証拠。
+  def test_u8_loads_are_widened_before_arithmetic
+    kernel = Moissanite.kernel(:quad, buf: :u8_buf, n: :i64) do |k, buf, _n|
+      k.ret buf[0] * buf[1] * buf[2] * buf[3]
+    end
+
+    buf = Moissanite::Buffer.u8([255, 255, 255, 255])
+
+    assert_equal 4_228_250_625, kernel.interpret(buf, 4)
+    assert_kernel_equivalent kernel, [[buf, 4]]
+  end
+
+  # u8 への書き込みの切り詰め: oracle は value & 0xFF、native は (uint8_t)
+  # キャスト。両者が同じでなければ「バイトを書く」カーネルは書けない。
+  def test_u8_store_truncation_matches_oracle
+    kernel = Moissanite.kernel(:scale, out: :u8_buf, src: :u8_buf, n: :i64, factor: :i64) do |k, out, src, n, factor|
+      k.count(n) { |i| k.store(out, i, src[i] * factor) }
+      k.ret 0
+    end
+
+    src = Moissanite::Buffer.u8([1, 100, 200, 255])
+    out_oracle = Moissanite::Buffer.u8(4)
+    kernel.interpret(out_oracle, src, 4, 3)
+
+    assert_equal [3, 44, 88, 253], out_oracle.to_a
+    native_backends.each do |backend|
+      out_native = Moissanite::Buffer.u8(4)
+      backend.compile(kernel).call(out_native, src, 4, 3)
+
+      assert_equal out_oracle.to_a, out_native.to_a, backend.tag.to_s
+    end
+  end
+
   def test_control_flow_mix
     kernel = Moissanite.kernel(:ctrl, x: :f64, n: :i64) do |k, x, n|
       acc = k.let(0.0)
