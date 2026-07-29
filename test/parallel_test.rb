@@ -152,6 +152,12 @@ class ParallelTest < Minitest::Test
     assert_raises(ArgumentError) { elementwise_pipeline.fuse(:guarded).call_parallel(out, xs, 5) }
   end
 
+  # GVL 解放は **native backend だけの性質** である。Fiddle::Function の呼び
+  # 出し中は GVL が手放されるが、oracle (純 Ruby インタプリタ) は握ったまま
+  # なので 2 スレッドでも 1.0x にしかならない — 構造上そうなる。
+  # MOISSANITE_BACKEND=oracle では測る対象が存在しない (かつ 30M 反復を
+  # 解釈するので極端に遅い) ので、カーネルを実際に取った backend を見て降りる。
+  # toolchain が「入っているか」(setup) ではなく「使われたか」を問うこと。
   def test_native_calls_release_the_gvl
     skip 'needs >= 2 cores' if Etc.nprocessors < 2
 
@@ -169,6 +175,8 @@ class ParallelTest < Minitest::Test
       end
       k.ret acc
     end
+    skip 'oracle holds the GVL by construction: nothing to measure' if spin.backend_name == :oracle
+
     reps = 60_000
     spin.call(100)
 
