@@ -305,6 +305,30 @@ Two rules make parallel decomposition exact:
 - **Balance with a queue.** Workloads like mandelbrot are row-skewed; a five-line dynamic band
   queue restores near-linear scaling where static blocks stall.
 
+## Foreign memory: kernels over buffers someone else owns
+
+`Buffer.wrap` adopts memory this gem did not allocate — a numpy `ndarray`, an
+`mmap`, whatever a C library handed back — so a kernel computes on it in place, with no copy:
+
+```ruby
+foreign = Moissanite::Buffer.wrap(address, count, :f64, owner: whoever_owns_it)
+kernel.call(foreign, xs, count)   # writes straight into that memory
+```
+
+Ownership does not transfer: a wrapped buffer never frees the region. Pass `owner:` and the
+Buffer pins the object keeping that memory alive, so a native kernel can't be left pointing at a
+freed address. Two things are checked at the door, because both fail silently otherwise: a NULL
+pointer, and an address that is not 8-byte aligned (native code reads the region as `double*` /
+`int64_t*`, so a misaligned base is undefined behavior in C). Everything downstream is unchanged —
+element-type checking, `view`, the extent guard, and `call_parallel` all work on adopted memory.
+
+The motivating case is [rupy](https://github.com/minamorl/rupy), which embeds CPython in the Ruby
+process: numpy's arrays live in _this_ address space, so `require "rupy/moissanite"` turns an
+`ndarray` into a `Buffer` pointing at numpy's own bytes. A runtime-built kernel then beats
+idiomatic numpy by ~11× on a 4-op polynomial (~4× against numpy written fully in-place) — not
+through faster arithmetic, but by fusing six passes into one, allocating no temporaries, folding
+runtime constants into the instruction stream, and fanning out over plain Ruby threads.
+
 ## The five laws
 
 1. **Expressions are data, never opaque thunks.** Everything can be inspected (`to_sexp`,

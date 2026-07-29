@@ -48,6 +48,44 @@ module Moissanite
       end
     end
 
+    # 外部メモリの採用。malloc せず、**他所が所有する**領域をそのまま指す
+    # (numpy の ndarray、mmap、他の C ライブラリが返した領域など)。
+    #
+    # 所有権は移らない — 解放するのは最後まで元の持ち主の仕事である。
+    # だから owner: に「その領域を生かしている Ruby オブジェクト」を渡す:
+    # Buffer が生きている間 owner も GC されなくなり、native カーネルが
+    # 解放済みの番地を踏む事故を塞ぐ。owner を渡さないなら、呼び手が
+    # Buffer より長く領域を生かす責任を負う。
+    #
+    # 番地は要素幅の境界に整列していなければならない。native backend は
+    # この領域を double* / int64_t* / uint8_t* として読むので、非整列は
+    # そのまま C の未定義動作になる (アーキテクチャによっては黙って壊れる)。
+    # u8 は幅 1 なので整列の制約は無い (検査が自明に通る)。
+    def self.wrap(pointer, size, element_type, owner: nil)
+      raise ArgumentError, "unknown element type #{element_type.inspect}" unless PACK.key?(element_type)
+      raise ArgumentError, "size must be positive, got #{size}" unless size.is_a?(Integer) && size.positive?
+
+      width = BYTES.fetch(element_type)
+      address = pointer.to_i
+      raise ArgumentError, 'refusing to wrap a NULL pointer' if address.zero?
+      raise ArgumentError, "address 0x#{address.to_s(16)} is not #{width}-byte aligned" unless (address % width).zero?
+
+      adopt(Fiddle::Pointer.new(address, size * width), size, element_type, owner)
+    end
+
+    # 生ポインタを包んだ Buffer を組み立てる共通路。Fiddle::Pointer.new は
+    # free 関数を持たないので、ここで作った Buffer は領域を決して解放しない。
+    def self.adopt(ptr, size, element_type, base)
+      buffer = allocate
+      buffer.instance_variable_set(:@element_type, element_type)
+      buffer.instance_variable_set(:@size, size)
+      buffer.instance_variable_set(:@bytes, BYTES.fetch(element_type))
+      buffer.instance_variable_set(:@ptr, ptr)
+      buffer.instance_variable_set(:@base, base)
+      buffer
+    end
+    private_class_method :adopt
+
     def initialize(element_type, size)
       raise ArgumentError, "unknown element type #{element_type.inspect}" unless PACK.key?(element_type)
       raise ArgumentError, "size must be positive, got #{size}" unless size.is_a?(Integer) && size.positive?
@@ -101,14 +139,9 @@ module Moissanite
         raise ArgumentError, "view(#{offset}, #{size}) out of bounds for size #{@size}"
       end
 
-      window = self.class.allocate
-      window.instance_variable_set(:@element_type, @element_type)
-      window.instance_variable_set(:@size, size)
-      window.instance_variable_set(:@bytes, @bytes)
-      window.instance_variable_set(:@ptr,
-                                   Fiddle::Pointer.new(@ptr.to_i + (offset * @bytes), size * @bytes))
-      window.instance_variable_set(:@base, self)
-      window
+      self.class.send(
+        :adopt, Fiddle::Pointer.new(@ptr.to_i + (offset * @bytes), size * @bytes), size, @element_type, self
+      )
     end
 
     private
