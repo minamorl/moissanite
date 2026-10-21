@@ -51,7 +51,8 @@ module Moissanite
       end
 
       # 生成物はコンテンツアドレス (source の SHA-256 + toolchain) された
-      # 共有キャッシュに置く。ここで素朴に共有パスへ直接書くと競走になる:
+      # 共有キャッシュに置く。compiler と command も含め、古い link 設定の
+      # 生成物を再利用しない。ここで素朴に共有パスへ直接書くと競走になる:
       # fork するアプリサーバや並列テストでは、同じ式木を複数プロセスが
       # 同時にコンパイルしうるので、書きかけの .so を別プロセスが dlopen
       # してしまう。一意な一時パスへ出してから rename で差し込む
@@ -59,7 +60,7 @@ module Moissanite
       # 見えるのは「無い」か「完成品」だけになる)。
       def ensure_compiled(source)
         dir = cache_dir
-        digest = Digest::SHA256.hexdigest(source)
+        digest = Digest::SHA256.hexdigest([source, compiler, *command('', '')].join("\0"))
         so_path = File.join(dir, "#{digest}-#{tag}.so")
         return so_path if File.exist?(so_path)
 
@@ -88,9 +89,12 @@ module Moissanite
       end
 
       def run_compiler(c_path, so_path)
-        cmd = command(c_path, so_path)
+        run_command(command(c_path, so_path), so_path)
+      end
+
+      def run_command(cmd, output_path)
         _out, err, status = Open3.capture3(*cmd)
-        raise CompileError, "#{cmd.join(' ')}\n#{err}" unless status.success? && File.exist?(so_path)
+        raise CompileError, "#{cmd.join(' ')}\n#{err}" unless status.success? && File.exist?(output_path)
       end
 
       def cache_dir
@@ -292,7 +296,24 @@ module Moissanite
       def self.tag = :tcc
 
       def self.command(c_path, so_path)
-        [compiler, '-shared', '-o', so_path, c_path, '-lm']
+        if RUBY_PLATFORM.include?('linux')
+          [Cc.compiler, '-shared', '-Wl,-z,noexecstack', '-o', so_path, c_path, '-lm']
+        else
+          [compiler, '-shared', '-o', so_path, c_path, '-lm']
+        end
+      end
+
+      def self.run_compiler(c_path, so_path)
+        return super unless RUBY_PLATFORM.include?('linux')
+
+        # TCC's ELF linker omits PT_GNU_STACK and rejects -z,noexecstack.
+        # Compile with TCC, then let the system linker declare the non-executable
+        # stack required by our generated C (and by dlopen on glibc >= 2.41).
+        object_path = "#{so_path}.o"
+        run_command([compiler, '-c', '-o', object_path, c_path], object_path)
+        super(object_path, so_path)
+      ensure
+        FileUtils.rm_f(object_path) if object_path
       end
 
       def self.compiler
