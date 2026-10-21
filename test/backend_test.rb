@@ -47,6 +47,34 @@ class BackendTest < Minitest::Test
     assert_includes tags, 'tcc'
   end
 
+  def test_tcc_declares_a_non_executable_stack_on_linux
+    skip 'ELF stack declaration is Linux-specific' unless RUBY_PLATFORM.include?('linux')
+    skip 'tcc not installed' unless Moissanite::Backend::Tcc.available?
+
+    compiled = Moissanite::Backend::Tcc.compile(kernel_for(11))
+
+    assert_equal :tcc, compiled.backend_name
+    assert_in_delta 22.25, compiled.call(2.0)
+
+    elf = File.binread(Dir.glob(File.join(@cache, '*-tcc.so')).fetch(0))
+
+    assert_equal "\x7fELF", elf[0, 4]
+    assert_equal 0, elf_stack_flags(elf) & 1, 'PF_X must not be set on PT_GNU_STACK'
+    assert_empty leftovers
+  end
+
+  def elf_stack_flags(elf)
+    byte_order = { 1 => '<', 2 => '>' }.fetch(elf.getbyte(5))
+    offset_at, size_at, flags_at, word = { 1 => [28, 42, 24, 'L'], 2 => [32, 54, 4, 'Q'] }.fetch(elf.getbyte(4))
+    offset = elf[offset_at..].unpack1("#{word}#{byte_order}")
+    size, count = elf[size_at, 4].unpack("S#{byte_order}S#{byte_order}")
+    headers = count.times.map { |i| elf[offset + (i * size), size] }
+    stack = headers.find { |header| header[0, 4].unpack1("L#{byte_order}") == 0x6474e551 }
+
+    refute_nil stack, 'PT_GNU_STACK is required; a missing header can imply an executable stack'
+    stack[flags_at, 4].unpack1("L#{byte_order}")
+  end
+
   def test_concurrent_threads_compiling_the_same_tree
     results = Array.new(8)
     Array.new(8) { |i| Thread.new { results[i] = Moissanite::Backend::Cc.compile(kernel_for(7)).call(2.0) } }
